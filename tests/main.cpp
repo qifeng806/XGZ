@@ -39,6 +39,7 @@ int main(int argc, char *argv[])
     struct Runner { const char *tag; int (*fn)(int, char *[]); };
     const Runner runners[] = {
         { "tleparser",      runTstTleParser },
+        { "tleblocks",      runTstTleBlocks },
         { "coordtransform", runTstCoordTransform },
         { "sunposition",    runTstSunPosition },
         { "nutation",       runTstNutation },

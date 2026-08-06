@@ -24,7 +24,7 @@ double DopplerCalc::compute(const std::array<double, 3> &rTeme,
     double dz = rECEF[2] - staECEF[2];
     double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (dist < 1e-9) return 0.0;
-    double lx = dx / dist, ly = dy / dist, lz = dz / dist;
+    const double lx = dx / dist, ly = dy / dist, lz = dz / dist;
 
     // ---- Step 3: 径向速度（靠近为负 → 按照公式 doppler = −v_radial / c × f） ----
     double vRadial = vECEF[0] * lx + vECEF[1] * ly + vECEF[2] * lz;

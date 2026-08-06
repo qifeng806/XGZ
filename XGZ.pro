@@ -25,6 +25,7 @@ SOURCES += \
     business/PassPredictWorker.cpp \
     business/PassPredictorService.cpp \
     business/TleFetcher.cpp \
+    business/TleBlocks.cpp \
     ui/MainWindow.cpp \
     ui/PolarPlotWidget.cpp \
     ui/GroundTrackWidget.cpp \
@@ -46,6 +47,7 @@ HEADERS += \
     business/PassPredictWorker.h \
     business/PassPredictorService.h \
     business/TleFetcher.h \
+    business/TleBlocks.h \
     ui/MainWindow.h \
     ui/PolarPlotWidget.h \
     ui/GroundTrackWidget.h \

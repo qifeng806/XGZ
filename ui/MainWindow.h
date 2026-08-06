@@ -20,6 +20,7 @@
 #include "core/models.h"
 #include "business/PassPredictorService.h"
 #include "business/TleFetcher.h"
+#include "business/TleBlocks.h"
 
 QT_BEGIN_NAMESPACE
 class PolarPlotWidget;
@@ -53,6 +54,8 @@ private:
     void populateTable(const QVector<PassEvent> &passes);
     // 从当前 UI 控件填充 Job 的观测站参数与计算配置
     void fillJobFromUi(PassPredictWorker::Job &job) const;
+    // 公共批量启动: 解析校验 TLE 块 → 构建任务 → 启动批量预报
+    void startBatchFromBlocks(const QVector<TleBlock> &blocks, const QString &origin);
     QVector<PassEvent> m_currentPasses;    // 原始全部过境
     QVector<PassEvent> m_filteredPasses;   // 过滤后（导出用）
 

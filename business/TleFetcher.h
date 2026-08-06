@@ -44,11 +44,12 @@ signals:
 
 private:
     void startRequest(const QUrl &url, const QString &tag);
-    void onReplyFinished();
+    void onReplyFinished(QNetworkReply *reply);
 
     QNetworkAccessManager m_nam;
     QNetworkReply *m_reply = nullptr;
     QString m_pendingTag;
+    bool m_cancelled = false;   // 取消请求后静默忽略迟到回复
 };
 
 #endif // BUSINESS_TLEFETCHER_H

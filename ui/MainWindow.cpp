@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 #include "PolarPlotWidget.h"
 #include "GroundTrackWidget.h"
+#include "business/TleBlocks.h"
 #include "core/TleParser.h"
 #include "core/CoordTransform.h"
 #include <QVBoxLayout>
@@ -87,38 +88,6 @@ public:
 private:
     QPlainTextEdit *m_edit;
 };
-
-// 一颗卫星的原始文本块
-struct TleBlock {
-    QString name;    // 名称行（可能为空）
-    QString line1;
-    QString line2;
-};
-
-// 解析多颗 TLE 文本块: 名称行(可选) + 行1 + 行2
-QVector<TleBlock> parseTleBlocks(const QString &text)
-{
-    QVector<TleBlock> blocks;
-    QString pendingName;
-    QString pendingL1;
-    const QStringList lines = text.split('\n');
-    for (const QString &raw : lines) {
-        const QString l = raw.trimmed();
-        if (l.isEmpty()) continue;
-        if (l.startsWith("1 ") || l.startsWith('1')) {
-            pendingL1 = l;
-        } else if (l.startsWith("2 ") || l.startsWith('2')) {
-            if (!pendingL1.isEmpty()) {
-                blocks.append({ pendingName, pendingL1, l });
-                pendingName.clear();
-                pendingL1.clear();
-            }
-        } else {
-            pendingName = l;   // 非 TLE 行视为下一颗卫星的名称
-        }
-    }
-    return blocks;
-}
 
 } // namespace
 
@@ -398,46 +367,7 @@ void MainWindow::onBatchImport()
         QMessageBox::warning(this, "批量导入", "未识别到有效的 TLE 两行根数");
         return;
     }
-
-    QVector<PassPredictWorker::Job> jobs;
-    int failed = 0;
-    for (const auto &b : blocks) {
-        TleParser::ParseError parseErr;
-        auto tleOpt = TleParser::parse(b.line1.toStdString(), b.line2.toStdString(),
-                                       &parseErr);
-        if (!tleOpt) {
-            ++failed;
-            continue;
-        }
-        PassPredictWorker::Job job;
-        fillJobFromUi(job);
-        job.tleLine0 = b.name;
-        job.tleLine1 = b.line1;
-        job.tleLine2 = b.line2;
-        jobs.append(job);
-    }
-
-    if (jobs.isEmpty()) {
-        QMessageBox::warning(this, "批量导入",
-            QString("共 %1 颗卫星，全部解析失败，请检查 TLE 内容")
-                .arg(blocks.size()));
-        return;
-    }
-
-    m_batchMode = true;
-    m_batchErrors.clear();
-    m_predictBtn->setEnabled(false);
-    m_cancelBtn->setEnabled(true);
-    m_progressBar->setVisible(true);
-    m_progressBar->setRange(0, jobs.size());
-    m_progressBar->setValue(0);
-    m_statusModel->setText(QString("模型: 批量 %1 颗").arg(jobs.size()));
-    if (failed > 0)
-        m_statusModel->setText(
-            QString("模型: 批量 %1 颗（%2 颗解析失败跳过）")
-                .arg(jobs.size()).arg(failed));
-
-    m_service->startBatch(jobs);
+    startBatchFromBlocks(blocks, "批量导入");
 }
 
 // ============================================================================
@@ -473,6 +403,16 @@ void MainWindow::onTleDownloaded(QString rawText, QString groupId)
     dlg.setText(rawText);
     if (dlg.exec() != QDialog::Accepted) return;
 
+    startBatchFromBlocks(blocks, "在线更新");
+}
+
+// ============================================================================
+// 公共批量启动: 解析校验 TLE 块 → 构建任务 → 启动批量预报
+// 供"批量导入"与"在线更新下载"两条入口复用
+// ============================================================================
+void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
+                                      const QString &origin)
+{
     QVector<PassPredictWorker::Job> jobs;
     int failed = 0;
     for (const auto &b : blocks) {
@@ -487,9 +427,10 @@ void MainWindow::onTleDownloaded(QString rawText, QString groupId)
         job.tleLine2 = b.line2;
         jobs.append(job);
     }
+
     if (jobs.isEmpty()) {
-        QMessageBox::warning(this, "在线更新",
-            QString("共 %1 颗卫星，全部解析失败，请检查网络数据")
+        QMessageBox::warning(this, origin,
+            QString("共 %1 颗卫星，全部解析失败，请检查 TLE 内容")
                 .arg(blocks.size()));
         return;
     }
@@ -501,7 +442,7 @@ void MainWindow::onTleDownloaded(QString rawText, QString groupId)
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, jobs.size());
     m_progressBar->setValue(0);
-    m_statusModel->setText(QString("模型: 批量 %1 颗（在线）").arg(jobs.size()));
+    m_statusModel->setText(QString("模型: 批量 %1 颗").arg(jobs.size()));
     if (failed > 0)
         m_statusModel->setText(
             QString("模型: 批量 %1 颗（%2 颗解析失败跳过）")

@@ -54,10 +54,8 @@ void TleFetcher::fetchSatellite(int catnorID)
 
 void TleFetcher::cancel()
 {
-    if (m_reply) {
-        m_reply->abort();
-        m_reply = nullptr;
-    }
+    m_cancelled = true;
+    if (m_reply) m_reply->abort();
     emit finished();
 }
 
@@ -71,15 +69,28 @@ void TleFetcher::startRequest(const QUrl &url, const QString &tag)
                   QStringLiteral("XGZ-PassPredictor/1.0 (Qt %1)").arg(QT_VERSION_STR));
 
     m_pendingTag = tag;
-    m_reply = m_nam.get(req);
-    connect(m_reply, &QNetworkReply::finished, this, &TleFetcher::onReplyFinished);
+    QNetworkReply *reply = m_nam.get(req);
+    m_reply = reply;
+    // 捕获 reply 指针而非依赖 m_reply: 防止旧请求的 finished 迟到时
+    // 误处理已被新请求替换的 m_reply（并发竞态）
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        onReplyFinished(reply);
+    });
 }
 
-void TleFetcher::onReplyFinished()
+void TleFetcher::onReplyFinished(QNetworkReply *reply)
 {
-    QNetworkReply *reply = m_reply;
+    // 取消请求或已被新请求取代 → 静默忽略（不弹"网络错误"误报）
+    if (m_cancelled) {
+        m_cancelled = false;
+        if (m_reply == reply) m_reply = nullptr;
+        return;
+    }
+    if (m_reply != reply) {
+        reply->deleteLater();   // 迟到的旧请求，直接丢弃
+        return;
+    }
     m_reply = nullptr;
-    if (!reply) return;
     reply->deleteLater();
 
     const QString tag = m_pendingTag;

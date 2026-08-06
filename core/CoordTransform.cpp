@@ -58,9 +58,8 @@ double CoordTransform::deltaTSeconds(double jdUtc)
     double year = 2000.0 + (jdUtc - 2451545.0) / 365.2425;
 
     if (year < 1900.0) {
-        double t = (1900.0 - 2000.0) / 100.0;
-        return -2.79 + 1.494119 * t - 0.0598939 * t * t
-             + 0.0061966 * t * t * t - 0.000197 * t * t * t * t;
+        // 取 1900 年处边界值（t = y − 1900 = 0），保证连续
+        return -2.79;
     }
     if (year < 1920.0) {
         double t = (year - 1900.0) / 100.0;
@@ -199,17 +198,27 @@ GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
     double lat = std::atan2(z + ep2 * b * sinT * sinT * sinT,
                             r - e2 * a * cosT * cosT * cosT);
 
-    // 高度: 由卯酉圈半径 N(φ) 反解
+    // 高度/纬度固定点迭代（Bowring 闭式解做初值，2~3 次即收敛）
+    // 极区 cos(φ)→0 时 r/cos(φ) 除零 → 改用 z 反解: h = z/sinφ − N(1−e²)
     for (int i = 0; i < 3; ++i) {
         double sinL = std::sin(lat);
+        double cosL = std::cos(lat);
         double Nl = a / std::sqrt(1.0 - e2 * sinL * sinL);
-        double h = r / std::cos(lat) - Nl;
+        double h;
+        if (std::fabs(cosL) > 1e-9)
+            h = r / cosL - Nl;
+        else
+            h = z / std::sin(lat) - Nl * (1.0 - e2);   // 极点: z 与 sinφ 同号
         lat = std::atan2(z, r * (1.0 - e2 * Nl / (Nl + h)));
     }
 
     double sinLat = std::sin(lat);
     double N = a / std::sqrt(1.0 - e2 * sinLat * sinLat);
-    double altKm = r / std::cos(lat) - N;
+    double altKm;
+    if (std::fabs(std::cos(lat)) > 1e-9)
+        altKm = r / std::cos(lat) - N;
+    else
+        altKm = z / std::sin(lat) - N * (1.0 - e2);
 
     return GeoPos(lat * 180.0 / PI, lonDeg, altKm);
 }

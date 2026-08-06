@@ -136,6 +136,19 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         painter.drawText(QPointF(x - 15, y0 + plotH + 15), QString::number(lon) + "°");
     }
 
+    // 真实大陆轮廓（Natural Earth 110m，qrc 资源加载）
+    // 先于过境轨迹绘制，保证轨迹线不被大陆遮挡
+    painter.setPen(QPen(QColor(60, 65, 75), 1));
+    painter.setBrush(QColor(35, 40, 50));
+    for (const auto &poly : m_landPolygons) {
+        if (poly.size() < 3) continue;
+        QPolygonF screen;
+        screen.reserve(poly.size());
+        for (const QPointF &pt : poly)
+            screen.append(geoToScreen(pt.x(), pt.y(), x0, y0, sx, sy));
+        painter.drawPolygon(screen);
+    }
+
     // 地面站标注
     {
         QPointF obsP = geoToScreen(m_obsLat, m_obsLon, x0, y0, sx, sy);
@@ -205,18 +218,6 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
             painter.drawText(tcaP + QPointF(8, -6), "TCA");
             painter.drawText(losP + QPointF(8, -6), "LOS");
         }
-    }
-
-    // 真实大陆轮廓（Natural Earth 110m，qrc 资源加载）
-    painter.setPen(QPen(QColor(60, 65, 75), 1));
-    painter.setBrush(QColor(35, 40, 50));
-    for (const auto &poly : m_landPolygons) {
-        if (poly.size() < 3) continue;
-        QPolygonF screen;
-        screen.reserve(poly.size());
-        for (const QPointF &pt : poly)
-            screen.append(geoToScreen(pt.x(), pt.y(), x0, y0, sx, sy));
-        painter.drawPolygon(screen);
     }
 
     // 如果没有过境，显示提示

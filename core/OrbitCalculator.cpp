@@ -160,6 +160,9 @@ double OrbitCalculator::bisectAOS(PropagateFn &propagate,
                                    double jdBelow, double jdAbove) const
 {
     double maskEl = obs.minElevDeg();
+    // 跨窗口过境: 下界处仰角已在掩星角之上（AOS 在窗口起点之前）→ 直接取窗口起点
+    if (elevationAt(propagate, obs, jdBelow) >= maskEl)
+        return jdBelow;
     double lo = jdBelow, hi = jdAbove;
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
         double mid = (lo + hi) * 0.5;
@@ -314,32 +317,39 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     if (inPass) {
         // 延长搜索最多 EXTEND_MIN 分钟
         double jdExtend = jdEnd + EXTEND_MIN / 1440.0;
+        double jdLos = -1.0;
         for (double jd = jdEnd; jd < jdExtend; jd += stepDays) {
             if (cancelled()) return passes;
 
             double el = elevationAt(propagate, observer, jd);
             if (prevEl >= maskEl && el < maskEl) {
-                double jdAOS = bisectAOS(propagate, observer, candBelow, jd);
-                double jdLOS = bisectLOS(propagate, observer, candAbove, jd);
-                double durSec = (jdLOS - jdAOS) * 86400.0;
-                if (durSec >= m_cfg.minDurationSec) {
-                    PassEvent ev;
-                    computeMoment(propagate, observer, jdAOS, ev.aosLook, ev.aosSatGeo);
-                    ev.aosJdMs = jdToIntMs(jdAOS);
-                    findTCA(propagate, observer, jdAOS, jdLOS,
-                            ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
-                    computeMoment(propagate, observer, jdLOS, ev.losLook, ev.losSatGeo);
-                    ev.losJdMs = jdToIntMs(jdLOS);
-                    ev.durationSec = durSec;
-                    collectSamples(propagate, observer, jdAOS, jdLOS, ev);
-                    ev.satelliteName = m_satName;
-                    fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
-                                    intMsToJd(ev.tcaJdMs), jdLOS);
-                    passes.push_back(ev);
-                }
+                jdLos = bisectLOS(propagate, observer, candAbove, jd);
                 break;
             }
             prevEl = el;
+        }
+
+        // 延长窗口结束仍未见 LOS（高轨/同步卫星长过境）:
+        // 以窗口终点为 LOS 近似收尾，避免过境整体丢失
+        if (jdLos < 0.0)
+            jdLos = jdExtend;
+
+        double jdAOS = bisectAOS(propagate, observer, candBelow, jdLos);
+        double durSec = (jdLos - jdAOS) * 86400.0;
+        if (durSec >= m_cfg.minDurationSec) {
+            PassEvent ev;
+            computeMoment(propagate, observer, jdAOS, ev.aosLook, ev.aosSatGeo);
+            ev.aosJdMs = jdToIntMs(jdAOS);
+            findTCA(propagate, observer, jdAOS, jdLos,
+                    ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
+            computeMoment(propagate, observer, jdLos, ev.losLook, ev.losSatGeo);
+            ev.losJdMs = jdToIntMs(jdLos);
+            ev.durationSec = durSec;
+            collectSamples(propagate, observer, jdAOS, jdLos, ev);
+            ev.satelliteName = m_satName;
+            fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
+                            intMsToJd(ev.tcaJdMs), jdLos);
+            passes.push_back(ev);
         }
     }
 
@@ -378,6 +388,8 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().tcaSunAlt = passes[i].tcaSunAlt;
                     merged.back().tcaSatShadow = passes[i].tcaSatShadow;
                     merged.back().tcaIllum = passes[i].tcaIllum;
+                    merged.back().tcaElRefracted = passes[i].tcaElRefracted;
+                    merged.back().dopplerAtTcaKHz = passes[i].dopplerAtTcaKHz;
                 }
             } else {
                 merged.push_back(std::move(passes[i]));

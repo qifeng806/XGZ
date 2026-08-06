@@ -18,6 +18,7 @@ SOURCES += \
     tst_coordtransform.cpp \
     tst_sunposition.cpp \
     tst_nutation.cpp \
+    tst_tleblocks.cpp \
     tst_earthshadow.cpp \
     tst_propagator.cpp \
     tst_orbitcalc.cpp \
@@ -30,6 +31,7 @@ SOURCES += \
     ../core/EarthShadow.cpp \
     ../core/DopplerCalc.cpp \
     ../core/OrbitCalculator.cpp \
+    ../business/TleBlocks.cpp \
     ../perturb-master/src/perturb.cpp \
     ../perturb-master/src/sgp4.cpp \
     ../perturb-master/src/tle.cpp

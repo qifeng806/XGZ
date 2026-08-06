@@ -101,6 +101,14 @@ inline double meanObliquityDegImpl(double jdTT)
 
 namespace Nutation {
 
+// 按日缓存: 章动日变化 < 0.3″，太阳位置等高频调用无需重复计算 63 项。
+// thread_local 保证多线程（预报 worker 并行）安全
+struct DayCache {
+    double jdDay = 0.0;
+    Angles value;
+};
+thread_local DayCache g_cache;
+
 double meanObliquityDeg(double jdTT)
 {
     return meanObliquityDegImpl(jdTT);
@@ -113,6 +121,10 @@ double trueObliquityDeg(double jdTT)
 
 Angles compute(double jdTT)
 {
+    const double day = std::floor(jdTT);
+    if (g_cache.jdDay == day)
+        return g_cache.value;
+
     const double T  = (jdTT - 2451545.0) / 36525.0;
 
     // 基本量（度）— IAU 1980 章动级数（Meeus 22.A，T 为 J2000 起算儒略世纪）
@@ -140,7 +152,10 @@ Angles compute(double jdTT)
     }
     dPsi *= 1e-4 * ARC_SEC_TO_RAD;   // → 弧度
     dEps *= 1e-4 * ARC_SEC_TO_RAD;
-    return { dPsi, dEps };
+
+    g_cache.jdDay = day;
+    g_cache.value = { dPsi, dEps };
+    return g_cache.value;
 }
 
 } // namespace Nutation

@@ -1,0 +1,38 @@
+// =============================================================================
+// TleBlocks.cpp — 多颗 TLE 文本块解析实现
+// =============================================================================
+#include "TleBlocks.h"
+
+QVector<TleBlock> parseTleBlocks(const QString &text)
+{
+    QVector<TleBlock> blocks;
+    QString pendingName;
+    QString pendingL1;
+
+    // TLE 行严格判据: 前缀 "1 "/"2 " 且长度 ≥ 69。
+    // 避免把 "1U CUBESAT"、"1999-xxx 论文标题" 之类名称行误判为 TLE 行
+    const auto isTleLine1 = [](const QString &l) {
+        return l.startsWith("1 ") && l.length() >= 69;
+    };
+    const auto isTleLine2 = [](const QString &l) {
+        return l.startsWith("2 ") && l.length() >= 69;
+    };
+
+    const QStringList lines = text.split('\n');
+    for (const QString &raw : lines) {
+        const QString l = raw.trimmed();
+        if (l.isEmpty()) continue;
+        if (isTleLine1(l)) {
+            pendingL1 = l;
+        } else if (isTleLine2(l)) {
+            if (!pendingL1.isEmpty()) {
+                blocks.append({ pendingName, pendingL1, l });
+                pendingName.clear();
+                pendingL1.clear();
+            }
+        } else {
+            pendingName = l;   // 非 TLE 行视为下一颗卫星的名称
+        }
+    }
+    return blocks;
+}

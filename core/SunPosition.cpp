@@ -106,11 +106,17 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
 
     double sinAlt = std::sin(obsLat) * std::sin(dec)
                   + std::cos(obsLat) * std::cos(dec) * std::cos(lha);
+    // 钳制防 asin 越界（浮点舍入可致 |sinAlt| 略超 1）
+    sinAlt = std::min(1.0, std::max(-1.0, sinAlt));
     double alt = std::asin(sinAlt);
 
-    double sinAz = -std::sin(lha) * std::cos(dec) / std::cos(alt);
+    // 防除零: cos(alt)→0（太阳在天顶）与 cos(lat)→0（站在极点）时
+    // 方位角无定义，返回 0（北）即可，避免 0/0 → NaN
+    const double cosAlt = std::max(1e-12, std::cos(alt));
+    const double cosLat = std::max(1e-12, std::cos(obsLat));
+    double sinAz = -std::sin(lha) * std::cos(dec) / cosAlt;
     double cosAz = (std::sin(dec) - std::sin(obsLat) * std::sin(alt))
-                  / (std::cos(obsLat) * std::cos(alt));
+                  / (cosLat * cosAlt);
     double az = std::atan2(sinAz, cosAz);
     az = wrap2Pi(az);
 

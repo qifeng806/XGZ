@@ -5,6 +5,7 @@
 #define TESTS_TST_RUNNERS_H
 
 int runTstTleParser(int argc, char *argv[]);
+int runTstTleBlocks(int argc, char *argv[]);
 int runTstCoordTransform(int argc, char *argv[]);
 int runTstSunPosition(int argc, char *argv[]);
 int runTstNutation(int argc, char *argv[]);
