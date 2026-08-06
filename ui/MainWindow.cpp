@@ -1,0 +1,582 @@
+// =============================================================================
+// MainWindow.cpp — 主窗口完整实现
+// =============================================================================
+#include "MainWindow.h"
+#include "PolarPlotWidget.h"
+#include "GroundTrackWidget.h"
+#include "core/TleParser.h"
+#include "core/CoordTransform.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGroupBox>
+#include <QGridLayout>
+#include <QHeaderView>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QTextStream>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QScrollBar>
+#include <QSplitter>
+#include <QTimeZone>
+
+// ============================================================================
+// 构建 UI
+// ============================================================================
+void MainWindow::setupUI()
+{
+    setWindowTitle("XGZ — 卫星 TLE 过境预报系统");
+    resize(1280, 800);
+
+    auto *centralWidget = new QWidget(this);
+    setCentralWidget(centralWidget);
+    auto *mainLayout = new QVBoxLayout(centralWidget);
+
+    // ---- 输入区 ----
+    auto *inputGroup = new QGroupBox("输入参数");
+    auto *inputLayout = new QGridLayout(inputGroup);
+
+    // TLE 输入
+    inputLayout->addWidget(new QLabel("TLE 行 1:"), 0, 0);
+    m_tleInput1 = new QPlainTextEdit;
+    m_tleInput1->setFixedHeight(36);
+    m_tleInput1->setPlaceholderText(
+        "1 25544U 98067A   24083.56167013  .00012345  00000-0  24655-3 0  9994");
+    inputLayout->addWidget(m_tleInput1, 0, 1, 1, 5);
+
+    inputLayout->addWidget(new QLabel("TLE 行 2:"), 1, 0);
+    m_tleInput2 = new QPlainTextEdit;
+    m_tleInput2->setFixedHeight(36);
+    m_tleInput2->setPlaceholderText(
+        "2 25544  51.6423  23.4567 0004567 123.4567 236.7890 15.50012345678901");
+    inputLayout->addWidget(m_tleInput2, 1, 1, 1, 5);
+
+    // 地面站行
+    inputLayout->addWidget(new QLabel("站纬度(°):"), 2, 0);
+    m_latSpin = new QDoubleSpinBox;
+    m_latSpin->setRange(-90.0, 90.0);
+    m_latSpin->setValue(39.9042);
+    m_latSpin->setDecimals(4);
+    m_latSpin->setSuffix("°N");
+    inputLayout->addWidget(m_latSpin, 2, 1);
+
+    inputLayout->addWidget(new QLabel("站经度(°):"), 2, 2);
+    m_lonSpin = new QDoubleSpinBox;
+    m_lonSpin->setRange(-180.0, 180.0);
+    m_lonSpin->setValue(116.4074);
+    m_lonSpin->setDecimals(4);
+    m_lonSpin->setSuffix("°E");
+    inputLayout->addWidget(m_lonSpin, 2, 3);
+
+    inputLayout->addWidget(new QLabel("海拔(km):"), 2, 4);
+    m_altSpin = new QDoubleSpinBox;
+    m_altSpin->setRange(-1.0, 100.0);
+    m_altSpin->setValue(0.05);
+    m_altSpin->setDecimals(3);
+    inputLayout->addWidget(m_altSpin, 2, 5);
+
+    // 参数行
+    inputLayout->addWidget(new QLabel("掩蔽角(°):"), 3, 0);
+    m_maskSpin = new QDoubleSpinBox;
+    m_maskSpin->setRange(0.0, 90.0);
+    m_maskSpin->setValue(10.0);
+    inputLayout->addWidget(m_maskSpin, 3, 1);
+
+    inputLayout->addWidget(new QLabel("预报时长:"), 3, 2);
+    m_hoursSpin = new QSpinBox;
+    m_hoursSpin->setRange(1, 168);
+    m_hoursSpin->setValue(24);
+    m_hoursSpin->setSuffix(" h");
+    inputLayout->addWidget(m_hoursSpin, 3, 3);
+
+    inputLayout->addWidget(new QLabel("时区:"), 3, 4);
+    m_timezoneCombo = new QComboBox;
+    m_timezoneCombo->addItem("UTC+0", 0);
+    m_timezoneCombo->addItem("UTC+8 (北京)", 8 * 3600);
+    inputLayout->addWidget(m_timezoneCombo, 3, 5);
+
+    // 高级参数行
+    inputLayout->addWidget(new QLabel("暗天阈值:"), 4, 0);
+    m_darkSkyCombo = new QComboBox;
+    m_darkSkyCombo->addItem("民用 −6°", -6.0);
+    m_darkSkyCombo->addItem("航海 −12°", -12.0);
+    m_darkSkyCombo->addItem("天文 −18°", -18.0);
+    inputLayout->addWidget(m_darkSkyCombo, 4, 1);
+
+    inputLayout->addWidget(new QLabel("载频(MHz):"), 4, 2);
+    m_freqSpin = new QDoubleSpinBox;
+    m_freqSpin->setRange(1.0, 100000.0);
+    m_freqSpin->setValue(437.800);
+    m_freqSpin->setDecimals(3);
+    inputLayout->addWidget(m_freqSpin, 4, 3);
+
+    m_visibleOnlyCheck = new QCheckBox("仅显示可见过境");
+    inputLayout->addWidget(m_visibleOnlyCheck, 4, 4, 1, 2);
+
+    inputLayout->addWidget(new QLabel("起始时间(UTC):"), 5, 0);
+    m_startTimeEdit = new QDateTimeEdit(QDateTime::currentDateTimeUtc());
+    m_startTimeEdit->setDisplayFormat("yyyy-MM-dd HH:mm:ss");
+    m_startTimeEdit->setTimeZone(QTimeZone::UTC);
+    inputLayout->addWidget(m_startTimeEdit, 5, 1, 1, 3);
+
+    mainLayout->addWidget(inputGroup);
+
+    // ---- 控制按钮行 ----
+    auto *btnLayout = new QHBoxLayout;
+    m_predictBtn = new QPushButton("▶ 开始预报");
+    m_predictBtn->setStyleSheet("font-weight: bold; min-height: 32px;");
+    m_cancelBtn  = new QPushButton("✕ 取消");
+    m_cancelBtn->setEnabled(false);
+    m_exportCsvBtn = new QPushButton("导出 CSV");
+    m_exportKmlBtn = new QPushButton("导出 KML");
+    m_exportJsonBtn = new QPushButton("导出 JSON");
+    m_clearBtn   = new QPushButton("清空");
+
+    btnLayout->addWidget(m_predictBtn);
+    btnLayout->addWidget(m_cancelBtn);
+    btnLayout->addWidget(m_exportCsvBtn);
+    btnLayout->addWidget(m_exportKmlBtn);
+    btnLayout->addWidget(m_exportJsonBtn);
+    btnLayout->addWidget(m_clearBtn);
+    btnLayout->addStretch();
+
+    m_progressBar = new QProgressBar;
+    m_progressBar->setVisible(false);
+    m_progressBar->setFixedWidth(200);
+    btnLayout->addWidget(m_progressBar);
+
+    mainLayout->addLayout(btnLayout);
+
+    // ---- 状态栏 ----
+    auto *statusLayout = new QHBoxLayout;
+    m_statusModel = new QLabel("模型: —");
+    m_statusEpoch = new QLabel("历元: —");
+    m_statusAge   = new QLabel("龄期: —");
+    m_statusCount = new QLabel("过境: 0");
+    statusLayout->addWidget(m_statusModel);
+    statusLayout->addWidget(m_statusEpoch);
+    statusLayout->addWidget(m_statusAge);
+    statusLayout->addWidget(m_statusCount);
+    statusLayout->addStretch();
+    mainLayout->addLayout(statusLayout);
+
+    // ---- 结果区（三页签） ----
+    m_tabWidget = new QTabWidget;
+
+    // 页签 1: 过境列表
+    m_passTable = new QTableWidget;
+    m_passTable->setColumnCount(14);
+    m_passTable->setHorizontalHeaderLabels({
+        "#", "卫星名", "入境(UTC)", "出境(UTC)", "持续",
+        "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
+        "入境位置", "斜距", "多普勒", "质量"
+    });
+    m_passTable->horizontalHeader()->setStretchLastSection(true);
+    m_passTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_passTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_passTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_passTable->setAlternatingRowColors(true);
+    m_passTable->verticalHeader()->setVisible(false);
+    m_tabWidget->addTab(m_passTable, "过境列表");
+
+    // 页签 2: 极坐标图
+    m_polarPlot = new PolarPlotWidget;
+    m_tabWidget->addTab(m_polarPlot, "极坐标图");
+
+    // 页签 3: 地面轨迹图
+    m_groundTrack = new GroundTrackWidget;
+    m_tabWidget->addTab(m_groundTrack, "地面轨迹");
+
+    mainLayout->addWidget(m_tabWidget, 1);
+}
+
+// ============================================================================
+// 槽函数连接
+// ============================================================================
+void MainWindow::setupConnections()
+{
+    m_service = new PassPredictorService(this);
+
+    connect(m_predictBtn, &QPushButton::clicked, this, &MainWindow::onPredict);
+    connect(m_cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
+    connect(m_clearBtn,   &QPushButton::clicked, this, &MainWindow::onClear);
+    connect(m_exportCsvBtn, &QPushButton::clicked, this, &MainWindow::onExportCSV);
+    connect(m_exportKmlBtn, &QPushButton::clicked, this, &MainWindow::onExportKML);
+    connect(m_exportJsonBtn, &QPushButton::clicked, this, &MainWindow::onExportJSON);
+
+    connect(m_service, &PassPredictorService::resultReady,
+            this, &MainWindow::onResultsReady);
+    connect(m_service, &PassPredictorService::errorOccurred,
+            this, &MainWindow::onError);
+    connect(m_passTable, &QTableWidget::cellClicked,
+            this, &MainWindow::onTableRowSelected);
+
+    // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
+    connect(m_visibleOnlyCheck, &QCheckBox::toggled, this, [this](bool) {
+        if (m_currentPasses.isEmpty()) return;
+        if (m_visibleOnlyCheck->isChecked()) {
+            QVector<PassEvent> filtered;
+            for (const auto &p : m_currentPasses) {
+                if (p.visibility == PassVisibility::Visible)
+                    filtered.append(p);
+            }
+            m_filteredPasses = filtered;
+        } else {
+            m_filteredPasses = m_currentPasses;
+        }
+        populateTable(m_filteredPasses);
+        m_polarPlot->setPasses(m_filteredPasses);
+        m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
+    });
+}
+
+// ============================================================================
+// 预报触发
+// ============================================================================
+void MainWindow::onPredict()
+{
+    QString tle1 = m_tleInput1->toPlainText().trimmed();
+    QString tle2 = m_tleInput2->toPlainText().trimmed();
+
+    if (tle1.isEmpty() || tle2.isEmpty()) {
+        QMessageBox::warning(this, "输入错误", "请输入完整的 TLE 两行根数");
+        return;
+    }
+
+    m_predictBtn->setEnabled(false);
+    m_cancelBtn->setEnabled(true);
+    m_progressBar->setVisible(true);
+    m_progressBar->setRange(0, 0);  // 不确定进度
+
+    PassPredictWorker::Job job;
+    job.tleLine1      = tle1;
+    job.tleLine2      = tle2;
+    job.observerLatDeg = m_latSpin->value();
+    job.observerLonDeg = m_lonSpin->value();
+    job.observerAltKm  = m_altSpin->value();
+    job.minElevDeg     = m_maskSpin->value();
+    job.hoursAhead     = m_hoursSpin->value();
+    job.startUtc       = m_startTimeEdit->dateTime();
+
+    // 配置 OrbitCalculator 参数
+    job.calcCfg.coarseStepSec      = 60.0;
+    job.calcCfg.bisectionIters     = 18;
+    job.calcCfg.enableSunAnalysis  = true;
+    job.calcCfg.enableShadowCheck  = true;
+    job.calcCfg.enableRefraction   = true;
+    job.calcCfg.enableDoppler      = true;
+    job.calcCfg.carrierFreqMHz     = m_freqSpin->value();
+    job.calcCfg.darkSkyThresholdDeg = m_darkSkyCombo->currentData().toDouble();
+
+    m_service->startJob(job);
+}
+
+void MainWindow::onCancel()
+{
+    m_service->cancelAll();
+    m_predictBtn->setEnabled(true);
+    m_cancelBtn->setEnabled(false);
+    m_progressBar->setVisible(false);
+}
+
+void MainWindow::onClear()
+{
+    m_tleInput1->clear();
+    m_tleInput2->clear();
+    m_passTable->setRowCount(0);
+    m_currentPasses.clear();
+    m_polarPlot->clear();
+    m_groundTrack->clear();
+    m_statusModel->setText("模型: —");
+    m_statusEpoch->setText("历元: —");
+    m_statusAge->setText("龄期: —");
+    m_statusCount->setText("过境: 0");
+}
+
+// ============================================================================
+// 结果处理
+// ============================================================================
+void MainWindow::onResultsReady(QVector<PassEvent> passes)
+{
+    m_currentPasses = passes;
+
+    // 过滤可见过境（过滤后结果替换表格和可视化数据）
+    if (m_visibleOnlyCheck->isChecked()) {
+        QVector<PassEvent> filtered;
+        for (const auto &p : passes) {
+            if (p.visibility == PassVisibility::Visible)
+                filtered.append(p);
+        }
+        m_filteredPasses = filtered;  // 导出使用过滤后数据
+    } else {
+        m_filteredPasses = passes;
+    }
+
+    populateTable(m_filteredPasses);
+    m_polarPlot->setPasses(m_filteredPasses);
+    m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
+
+    // 统计用原始数据
+    int visCount = std::count_if(m_currentPasses.begin(), m_currentPasses.end(),
+        [](const PassEvent &p) { return p.visibility == PassVisibility::Visible; });
+    m_statusCount->setText(QString("过境: %1 (可见: %2)")
+        .arg(m_currentPasses.size()).arg(visCount));
+
+    m_predictBtn->setEnabled(true);
+    m_cancelBtn->setEnabled(false);
+    m_progressBar->setVisible(false);
+}
+
+void MainWindow::onError(QString msg)
+{
+    QMessageBox::warning(this, "错误", msg);
+    m_predictBtn->setEnabled(true);
+    m_cancelBtn->setEnabled(false);
+    m_progressBar->setVisible(false);
+}
+
+void MainWindow::onTableRowSelected(int row, int col)
+{
+    Q_UNUSED(col);
+    if (row >= 0 && row < m_passTable->rowCount()) {
+        m_polarPlot->setSelectedPass(row);
+        m_groundTrack->setSelectedPass(row);
+    }
+}
+
+// ============================================================================
+// 表格填充
+// ============================================================================
+void MainWindow::populateTable(const QVector<PassEvent> &passes)
+{
+    m_passTable->setRowCount(0);
+    m_passTable->setRowCount(passes.size());
+
+    int tzOffsetSec = m_timezoneCombo->currentData().toInt();
+    QTimeZone displayTz = (tzOffsetSec == 0)
+        ? QTimeZone::UTC
+        : QTimeZone(tzOffsetSec);
+
+    auto jdMsToStr = [&displayTz](int64_t jdMs) -> QString {
+        // JD×86400000 毫秒 → 1970 epoch 毫秒（纯整数运算，无舍入/精度损失）
+        qint64 msecs = jdMs - 210866760000000LL;  // 2440587.5 × 86400000
+        QDateTime dt = QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::UTC);
+        if (displayTz != QTimeZone::UTC)
+            dt = dt.toTimeZone(displayTz);
+        return dt.toString("HH:mm:ss");
+    };
+
+    for (int i = 0; i < passes.size(); ++i) {
+        const auto &p = passes[i];
+        int r = i;
+
+        auto setCell = [&](int c, const QString &text) {
+            m_passTable->setItem(r, c, new QTableWidgetItem(text));
+        };
+
+        setCell(0,  QString::number(i + 1));
+        setCell(1,  QString::fromStdString(p.satelliteName));
+        setCell(2,  jdMsToStr(p.aosJdMs));
+        setCell(3,  jdMsToStr(p.losJdMs));
+        setCell(4,  QString("%1s").arg(static_cast<int>(p.durationSec)));
+        setCell(5,  QString::number(p.maxElevDeg, 'f', 1) + "°");
+        setCell(6,  QString::number(p.tcaLook.azDeg, 'f', 1) + "°");
+
+        // 可见性
+        QString visText;
+        QColor visColor;
+        switch (p.visibility) {
+        case PassVisibility::Visible:   visText = "可见"; visColor = QColor(0, 150, 0); break;
+        case PassVisibility::RadioOnly: visText = "无线电"; visColor = QColor(0, 100, 180); break;
+        case PassVisibility::Daylight:  visText = "白天"; visColor = QColor(150, 150, 150); break;
+        }
+        auto *visItem = new QTableWidgetItem(visText);
+        visItem->setForeground(visColor);
+        m_passTable->setItem(r, 7, visItem);
+
+        setCell(8,  QString::number(p.tcaSunAlt, 'f', 1) + "°");
+        setCell(9,  (p.tcaSatShadow == ShadowStatus::FullSunlight) ? "是" :
+                     (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "否");
+
+        setCell(10, QString("%1°, %2°, %3km")
+            .arg(p.aosSatGeo.latDeg, 0, 'f', 1)
+            .arg(p.aosSatGeo.lonDeg, 0, 'f', 1)
+            .arg(p.aosSatGeo.altKm, 0, 'f', 0));
+
+        setCell(11, QString::number(p.tcaLook.rangeKm, 'f', 0) + " km");
+        setCell(12, QString::number(p.dopplerAtTcaKHz, 'f', 2) + " kHz");
+
+        QString qualityText;
+        switch (p.quality) {
+        case PassQuality::Excellent: qualityText = "★★★"; break;
+        case PassQuality::Good:      qualityText = "★★";  break;
+        case PassQuality::Poor:      qualityText = "★";   break;
+        }
+        setCell(13, qualityText);
+
+        // 最大仰角颜色
+        auto *elItem = m_passTable->item(r, 5);
+        if (elItem) {
+            if (p.maxElevDeg >= 50.0)      elItem->setForeground(QColor(0, 160, 0));
+            else if (p.maxElevDeg >= 20.0) elItem->setForeground(QColor(200, 150, 0));
+            else                           elItem->setForeground(QColor(200, 80, 0));
+        }
+    }
+
+    m_passTable->resizeColumnsToContents();
+}
+
+// ============================================================================
+// 导出
+// ============================================================================
+void MainWindow::onExportCSV()
+{
+    if (m_filteredPasses.isEmpty()) return;
+    QString filePath = QFileDialog::getSaveFileName(this, "导出 CSV",
+        "passes_" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd") + ".csv",
+        "CSV Files (*.csv)");
+    if (filePath.isEmpty()) return;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
+        return;
+    }
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out.setGenerateByteOrderMark(true);
+
+    // 表头
+    out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),方位角(°),"
+           "可见性,太阳高度(°),卫星光照,入境纬度(°),入境经度(°),入境高度(km),"
+           "斜距(km),多普勒(kHz),质量\n";
+
+    for (int i = 0; i < m_filteredPasses.size(); ++i) {
+        const auto &p = m_filteredPasses[i];
+        auto jdToStr = [](int64_t jdMs) -> QString {
+            qint64 msecs = jdMs - 210866760000000LL;  // JD×86400000 → epoch ms
+            return QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::UTC)
+                .toString("yyyy-MM-dd HH:mm:ss");
+        };
+        // 可见性文字
+        QString visStr = "白天";
+        if (p.visibility == PassVisibility::Visible) visStr = "可见";
+        else if (p.visibility == PassVisibility::RadioOnly) visStr = "无线电";
+        out << (i + 1) << ","
+            << QString::fromStdString(p.satelliteName) << ","
+            << jdToStr(p.aosJdMs) << ","
+            << jdToStr(p.losJdMs) << ","
+            << p.durationSec << ","
+            << p.maxElevDeg << ","
+            << p.tcaLook.azDeg << ","
+            << visStr << ","
+            << p.tcaSunAlt << ","
+            << ((p.tcaSatShadow == ShadowStatus::FullSunlight) ? "日照" :
+                (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "本影") << ","
+            << p.aosSatGeo.latDeg << ","
+            << p.aosSatGeo.lonDeg << ","
+            << p.aosSatGeo.altKm << ","
+            << p.tcaLook.rangeKm << ","
+            << p.dopplerAtTcaKHz << ","
+            << ((p.quality == PassQuality::Excellent) ? "优秀" :
+                (p.quality == PassQuality::Good) ? "良好" : "一般") << "\n";
+    }
+}
+
+void MainWindow::onExportKML()
+{
+    if (m_filteredPasses.isEmpty()) return;
+    QString filePath = QFileDialog::getSaveFileName(this, "导出 KML",
+        "passes_" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd") + ".kml",
+        "KML Files (*.kml)");
+    if (filePath.isEmpty()) return;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
+        return;
+    }
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        << "<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n"
+        << "<Document>\n"
+        << "<name>XGZ Satellite Passes</name>\n";
+
+    // 标注地面站
+    out << "<Placemark>\n<name>Ground Station</name>\n"
+        << "<Point><coordinates>"
+        << m_lonSpin->value() << "," << m_latSpin->value() << ",0"
+        << "</coordinates></Point>\n</Placemark>\n";
+
+    for (int i = 0; i < m_filteredPasses.size(); ++i) {
+        const auto &p = m_filteredPasses[i];
+        out << "<Placemark>\n"
+            << "<name>Pass " << (i + 1) << ": "
+            << QString::fromStdString(p.satelliteName) << " "
+            << p.maxElevDeg << "°</name>\n"
+            << "<description>Duration: " << p.durationSec << "s</description>\n"
+            << "<LineString><coordinates>";
+        // 简化：仅绘制 AOS-TCA-LOS 三点的简单线
+        out << p.aosSatGeo.lonDeg << "," << p.aosSatGeo.latDeg << ",0 ";
+        out << p.tcaSatGeo.lonDeg << "," << p.tcaSatGeo.latDeg << ",0 ";
+        out << p.losSatGeo.lonDeg << "," << p.losSatGeo.latDeg << ",0";
+        out << "</coordinates></LineString>\n</Placemark>\n";
+    }
+    out << "</Document>\n</kml>\n";
+}
+
+void MainWindow::onExportJSON()
+{
+    if (m_filteredPasses.isEmpty()) return;
+    QString filePath = QFileDialog::getSaveFileName(this, "导出 JSON",
+        "passes_" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd") + ".json",
+        "JSON Files (*.json)");
+    if (filePath.isEmpty()) return;
+
+    QJsonArray arr;
+    for (const auto &p : m_filteredPasses) {
+        QJsonObject obj;
+        obj["satellite"]   = QString::fromStdString(p.satelliteName);
+        obj["aosJdMs"]     = static_cast<qint64>(p.aosJdMs);
+        obj["losJdMs"]     = static_cast<qint64>(p.losJdMs);
+        obj["tcaJdMs"]     = static_cast<qint64>(p.tcaJdMs);
+        obj["maxElevDeg"]  = p.maxElevDeg;
+        obj["durationSec"] = p.durationSec;
+        obj["visibility"]  = static_cast<int>(p.visibility);
+        obj["quality"]     = static_cast<int>(p.quality);
+        obj["dopplerKHz"]  = p.dopplerAtTcaKHz;
+        obj["aosSunAlt"]   = p.aosSunAlt;
+        obj["aosSatLit"]   = static_cast<int>(p.aosSatShadow);
+        obj["aosLat"]      = p.aosSatGeo.latDeg;
+        obj["aosLon"]      = p.aosSatGeo.lonDeg;
+        obj["aosAltKm"]    = p.aosSatGeo.altKm;
+        obj["aosAzDeg"]    = p.aosLook.azDeg;
+        obj["aosRangeKm"]  = p.aosLook.rangeKm;
+        arr.append(obj);
+    }
+    QJsonDocument doc(arr);
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
+        return;
+    }
+    file.write(doc.toJson(QJsonDocument::Indented));
+}
+
+// ============================================================================
+// 构造/析构
+// ============================================================================
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    setupUI();
+    setupConnections();
+}
+
+MainWindow::~MainWindow()
+{
+    // 服务对象由 Qt 父子关系自动管理，无需显式调用
+}

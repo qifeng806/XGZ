@@ -1,0 +1,170 @@
+// =============================================================================
+// GroundTrackWidget.cpp — 地面轨迹图实现
+// =============================================================================
+#include "GroundTrackWidget.h"
+#include <QPainter>
+#include <QPainterPath>
+
+GroundTrackWidget::GroundTrackWidget(QWidget *parent)
+    : QWidget(parent)
+{
+    setMinimumSize(400, 250);
+}
+
+void GroundTrackWidget::setPasses(const QVector<PassEvent> &passes,
+                                   double observerLatDeg, double observerLonDeg)
+{
+    m_passes = passes;
+    m_obsLat = observerLatDeg;
+    m_obsLon = observerLonDeg;
+    m_selectedIndex = (passes.isEmpty()) ? -1 : 0;
+    update();
+}
+
+void GroundTrackWidget::setSelectedPass(int index)
+{
+    if (index >= 0 && index < m_passes.size()) {
+        m_selectedIndex = index;
+        update();
+    }
+}
+
+void GroundTrackWidget::clear()
+{
+    m_passes.clear();
+    m_selectedIndex = -1;
+    update();
+}
+
+QPointF GroundTrackWidget::geoToScreen(double latDeg, double lonDeg,
+                                        double x0, double y0, double sx, double sy) const
+{
+    // 等矩形投影: lat → y (北=上=小), lon → x (东=右=大)
+    double x = x0 + (lonDeg + 180.0) * sx;
+    double y = y0 + (90.0 - latDeg) * sy;
+    return QPointF(x, y);
+}
+
+void GroundTrackWidget::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    double w = width(), h = height();
+    double margin = 40;
+    double x0 = margin, y0 = margin;
+    double plotW = w - 2 * margin, plotH = h - 2 * margin;
+    double sx = plotW / 360.0;   // 经度 → 像素
+    double sy = plotH / 180.0;   // 纬度 → 像素
+
+    // 背景
+    painter.fillRect(rect(), QColor(25, 30, 40));
+
+    // 网格线（每 30°）
+    painter.setPen(QPen(QColor(50, 55, 65), 1));
+    for (int lat = -90; lat <= 90; lat += 30) {
+        double y = y0 + (90.0 - lat) * sy;
+        painter.drawLine(QPointF(x0, y), QPointF(x0 + plotW, y));
+    }
+    for (int lon = -180; lon <= 180; lon += 30) {
+        double x = x0 + (lon + 180.0) * sx;
+        painter.drawLine(QPointF(x, y0), QPointF(x, y0 + plotH));
+    }
+
+    // 赤道加粗
+    painter.setPen(QPen(QColor(70, 75, 85), 2));
+    {
+        double yEq = y0 + 90.0 * sy;
+        painter.drawLine(QPointF(x0, yEq), QPointF(x0 + plotW, yEq));
+    }
+
+    // 经纬度标签
+    painter.setPen(QColor(140, 140, 140));
+    QFont labelFont = painter.font();
+    labelFont.setPointSize(8);
+    painter.setFont(labelFont);
+    for (int lat = -60; lat <= 60; lat += 30) {
+        double y = y0 + (90.0 - lat) * sy;
+        painter.drawText(QPointF(x0 - 35, y + 4), QString::number(lat) + "°");
+    }
+    for (int lon = -180; lon <= 180; lon += 60) {
+        double x = x0 + (lon + 180.0) * sx;
+        painter.drawText(QPointF(x - 15, y0 + plotH + 15), QString::number(lon) + "°");
+    }
+
+    // 地面站标注
+    {
+        QPointF obsP = geoToScreen(m_obsLat, m_obsLon, x0, y0, sx, sy);
+        painter.setPen(QPen(Qt::white, 2));
+        painter.setBrush(Qt::black);
+        painter.drawRect(QRectF(obsP.x() - 5, obsP.y() - 5, 10, 10));
+        painter.drawText(obsP + QPointF(8, -8), "站");
+    }
+
+    // 绘制过境地面轨迹
+    QVector<QColor> trackColors = {
+        QColor(80, 180, 255), QColor(255, 160, 60),
+        QColor(100, 255, 100), QColor(255, 100, 100)
+    };
+
+    for (int pi = 0; pi < m_passes.size(); ++pi) {
+        const auto &p = m_passes[pi];
+        bool isSelected = (pi == m_selectedIndex);
+        QColor col = trackColors[pi % trackColors.size()];
+        if (!isSelected) col.setAlpha(60);
+
+        QPointF aosP = geoToScreen(p.aosSatGeo.latDeg, p.aosSatGeo.lonDeg,
+                                    x0, y0, sx, sy);
+        QPointF tcaP = geoToScreen(p.tcaSatGeo.latDeg, p.tcaSatGeo.lonDeg,
+                                    x0, y0, sx, sy);
+        QPointF losP = geoToScreen(p.losSatGeo.latDeg, p.losSatGeo.lonDeg,
+                                    x0, y0, sx, sy);
+
+        // 贝塞尔曲线近似地面轨迹
+        QPainterPath trackPath;
+        trackPath.moveTo(aosP);
+        trackPath.quadTo(tcaP, losP);
+        painter.setPen(QPen(col, isSelected ? 2 : 1));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(trackPath);
+
+        if (isSelected) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 255, 200));
+            painter.drawEllipse(aosP, 5, 5);
+            painter.setBrush(QColor(255, 255, 0));
+            painter.drawEllipse(tcaP, 5, 5);
+            painter.setBrush(QColor(255, 80, 80));
+            painter.drawEllipse(losP, 5, 5);
+
+            painter.setPen(Qt::white);
+            painter.drawText(aosP + QPointF(8, -6), "AOS");
+            painter.drawText(tcaP + QPointF(8, -6), "TCA");
+            painter.drawText(losP + QPointF(8, -6), "LOS");
+        }
+    }
+
+    // 大陆轮廓简绘（数据在 resources/continent_data.txt，此处用简化版）
+    // 在实际部署中，加载多边形坐标文件进行绘制
+    painter.setPen(QPen(QColor(60, 65, 75), 1));
+    painter.setBrush(QColor(35, 40, 50));
+    // -- 亚洲简化轮廓 --
+    QPolygonF asia;
+    asia << geoToScreen(72, 55,   x0,y0,sx,sy) << geoToScreen(55, 37, x0,y0,sx,sy)
+         << geoToScreen(42, 48,   x0,y0,sx,sy) << geoToScreen(30, 40, x0,y0,sx,sy)
+         << geoToScreen(34, 25,   x0,y0,sx,sy) << geoToScreen(25, 60, x0,y0,sx,sy)
+         << geoToScreen(23, 68,   x0,y0,sx,sy) << geoToScreen(15, 74, x0,y0,sx,sy)
+         << geoToScreen(8,  76,   x0,y0,sx,sy) << geoToScreen(10, 78, x0,y0,sx,sy)
+         << geoToScreen(20, 80,   x0,y0,sx,sy) << geoToScreen(30, 82, x0,y0,sx,sy)
+         << geoToScreen(55, 80,   x0,y0,sx,sy) << geoToScreen(70, 68, x0,y0,sx,sy)
+         << geoToScreen(75, 72,   x0,y0,sx,sy) << geoToScreen(73, 56, x0,y0,sx,sy);
+    painter.drawPolygon(asia);
+
+    // 如果没有过境，显示提示
+    if (m_passes.isEmpty()) {
+        painter.setPen(QColor(150, 150, 150));
+        painter.setFont(QFont("Arial", 12));
+        painter.drawText(QRectF(x0, y0, plotW, plotH),
+                         Qt::AlignCenter, "暂无过境数据");
+    }
+}

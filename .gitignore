@@ -1,0 +1,37 @@
+# ===== Build outputs =====
+release/
+debug/
+build/
+*.o
+*.obj
+*.exe
+*.dll
+*.pdb
+*.ilk
+
+# ===== qmake artifacts =====
+Makefile
+Makefile.Debug
+Makefile.Release
+.qmake.stash
+.qmake.cache
+object_script.*
+
+# ===== Test build outputs =====
+tests/release/
+tests/debug/
+tests/Makefile
+tests/Makefile.Debug
+tests/Makefile.Release
+tests/.qmake.stash
+
+# ===== Qt Creator / IDE =====
+.qtcreator/
+*.user
+*.autosave
+.vscode/
+.idea/
+
+# ===== Generated data (runtime only; golden reference files stay committed) =====
+generated-*.out
+*.log
