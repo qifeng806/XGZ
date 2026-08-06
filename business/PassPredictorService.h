@@ -44,6 +44,7 @@ private:
     QVector<PassEvent> m_batchPasses;   // 已完成的各卫星过境
     int  m_batchCompleted = 0;          // 已完成（成功+失败）任务数
     int  m_batchTotal     = 0;          // 批量任务总数
+    int  m_batchSeq       = 0;          // 批次序号: 防旧批次迟到信号污染新批次
 
     void finishBatch();                 // 全部完成后排序并发出 resultReady
     void cleanupJob(ActiveJob &job);

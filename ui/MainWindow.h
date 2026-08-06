@@ -56,6 +56,8 @@ private:
     void fillJobFromUi(PassPredictWorker::Job &job) const;
     // 公共批量启动: 解析校验 TLE 块 → 构建任务 → 启动批量预报
     void startBatchFromBlocks(const QVector<TleBlock> &blocks, const QString &origin);
+    // 按"仅显示可见过境"开关过滤 m_currentPasses → m_filteredPasses 并刷新全部视图
+    void applyFilterAndRefresh();
     QVector<PassEvent> m_currentPasses;    // 原始全部过境
     QVector<PassEvent> m_filteredPasses;   // 过滤后（导出用）
 

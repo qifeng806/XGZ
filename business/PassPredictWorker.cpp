@@ -14,7 +14,8 @@ PassPredictWorker::PassPredictWorker(QObject *parent)
 
 void PassPredictWorker::run(Job job)
 {
-    m_cancelled = false;
+    // 注意: worker 每次任务新建且仅 run 一次，不得在此复位 m_cancelled ——
+    // 否则"启动前已被 cancel() 置位"的取消请求会被冲掉（取消失效竞态）
 
     // ---- Step 1: 解析 TLE（获取卫星名称和轨道信息） ----
     TleParser::ParseError parseErr;

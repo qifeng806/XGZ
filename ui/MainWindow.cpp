@@ -310,20 +310,33 @@ void MainWindow::setupConnections()
     // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
     connect(m_visibleOnlyCheck, &QCheckBox::toggled, this, [this](bool) {
         if (m_currentPasses.isEmpty()) return;
-        if (m_visibleOnlyCheck->isChecked()) {
-            QVector<PassEvent> filtered;
-            for (const auto &p : m_currentPasses) {
-                if (p.visibility == PassVisibility::Visible)
-                    filtered.append(p);
-            }
-            m_filteredPasses = filtered;
-        } else {
-            m_filteredPasses = m_currentPasses;
-        }
-        populateTable(m_filteredPasses);
-        m_polarPlot->setPasses(m_filteredPasses);
-        m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
+        applyFilterAndRefresh();
     });
+}
+
+// ============================================================================
+// 按可见性开关过滤并刷新表格/图表/统计
+// ============================================================================
+void MainWindow::applyFilterAndRefresh()
+{
+    if (m_visibleOnlyCheck->isChecked()) {
+        QVector<PassEvent> filtered;
+        for (const auto &p : m_currentPasses)
+            if (p.visibility == PassVisibility::Visible)
+                filtered.append(p);
+        m_filteredPasses = filtered;
+    } else {
+        m_filteredPasses = m_currentPasses;
+    }
+    populateTable(m_filteredPasses);
+    m_polarPlot->setPasses(m_filteredPasses);
+    m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
+
+    int visCount = 0;
+    for (const auto &p : m_currentPasses)
+        if (p.visibility == PassVisibility::Visible) ++visCount;
+    m_statusCount->setText(QString("过境: %1 (可见: %2)")
+        .arg(m_currentPasses.size()).arg(visCount));
 }
 
 // ============================================================================
@@ -508,28 +521,7 @@ void MainWindow::onClear()
 void MainWindow::onResultsReady(QVector<PassEvent> passes)
 {
     m_currentPasses = passes;
-
-    // 过滤可见过境（过滤后结果替换表格和可视化数据）
-    if (m_visibleOnlyCheck->isChecked()) {
-        QVector<PassEvent> filtered;
-        for (const auto &p : passes) {
-            if (p.visibility == PassVisibility::Visible)
-                filtered.append(p);
-        }
-        m_filteredPasses = filtered;  // 导出使用过滤后数据
-    } else {
-        m_filteredPasses = passes;
-    }
-
-    populateTable(m_filteredPasses);
-    m_polarPlot->setPasses(m_filteredPasses);
-    m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
-
-    // 统计用原始数据
-    int visCount = std::count_if(m_currentPasses.begin(), m_currentPasses.end(),
-        [](const PassEvent &p) { return p.visibility == PassVisibility::Visible; });
-    m_statusCount->setText(QString("过境: %1 (可见: %2)")
-        .arg(m_currentPasses.size()).arg(visCount));
+    applyFilterAndRefresh();
 
     // 批量模式收尾: 汇总失败信息（若有）
     if (m_batchMode) {

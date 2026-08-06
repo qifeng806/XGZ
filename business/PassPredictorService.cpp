@@ -18,6 +18,9 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
 {
     cleanupAll();
 
+    // 单星任务不走批量汇总; 递增序号使在途批量任务的迟到信号全部失效
+    ++m_batchSeq;
+
     auto *thread = new QThread(this);
     auto *worker = new PassPredictWorker;
     worker->moveToThread(thread);
@@ -57,6 +60,7 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
     m_batchPasses.clear();
     m_batchCompleted = 0;
     m_batchTotal = jobs.size();
+    const int seq = ++m_batchSeq;   // 本批次序号: 迟到的旧批次信号在此校验丢弃
 
     for (int i = 0; i < m_batchTotal; ++i) {
         auto *thread = new QThread(this);
@@ -65,7 +69,8 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
 
         // 成功: 汇总结果并计数
         connect(worker, &PassPredictWorker::resultReady, this,
-                [this](QVector<PassEvent> passes) {
+                [this, seq](QVector<PassEvent> passes) {
+                    if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
                     m_batchPasses.append(passes);
                     m_batchCompleted++;
                     emit batchProgress(m_batchCompleted, m_batchTotal);
@@ -74,7 +79,8 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
 
         // 失败: 转发错误并计数（否则批量永远等不到完成 → 悬挂）
         connect(worker, &PassPredictWorker::errorOccurred, this,
-                [this](QString msg) {
+                [this, seq](QString msg) {
+                    if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
                     m_batchCompleted++;
                     emit batchProgress(m_batchCompleted, m_batchTotal);
                     emit errorOccurred(msg);
