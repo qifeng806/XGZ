@@ -82,6 +82,7 @@ public:
     }
 
     QString text() const { return m_edit->toPlainText(); }
+    void setText(const QString &t) { m_edit->setPlainText(t); }
 
 private:
     QPlainTextEdit *m_edit;
@@ -220,6 +221,16 @@ void MainWindow::setupUI()
     m_startTimeEdit->setTimeZone(QTimeZone::UTC);
     inputLayout->addWidget(m_startTimeEdit, 5, 1, 1, 3);
 
+    // 在线更新行
+    inputLayout->addWidget(new QLabel("在线更新:"), 6, 0);
+    m_tleGroupCombo = new QComboBox;
+    for (const auto &g : TleFetcher::groups())
+        m_tleGroupCombo->addItem(g.label, g.id);
+    m_tleGroupCombo->setToolTip("从 CelesTrak 下载该组卫星的最新 TLE");
+    inputLayout->addWidget(m_tleGroupCombo, 6, 1, 1, 3);
+    m_onlineUpdateBtn = new QPushButton("下载 TLE");
+    inputLayout->addWidget(m_onlineUpdateBtn, 6, 4, 1, 2);
+
     mainLayout->addWidget(inputGroup);
 
     // ---- 控制按钮行 ----
@@ -299,9 +310,17 @@ void MainWindow::setupUI()
 void MainWindow::setupConnections()
 {
     m_service = new PassPredictorService(this);
+    m_tleFetcher = new TleFetcher(this);
 
     connect(m_predictBtn, &QPushButton::clicked, this, &MainWindow::onPredict);
     connect(m_batchImportBtn, &QPushButton::clicked, this, &MainWindow::onBatchImport);
+    connect(m_onlineUpdateBtn, &QPushButton::clicked, this, &MainWindow::onOnlineUpdate);
+    connect(m_tleFetcher, &TleFetcher::downloaded, this, &MainWindow::onTleDownloaded);
+    connect(m_tleFetcher, &TleFetcher::fetchError, this, &MainWindow::onTleError);
+    connect(m_tleFetcher, &TleFetcher::finished, this, [this]() {
+        m_onlineUpdateBtn->setEnabled(true);
+        m_onlineUpdateBtn->setText("下载 TLE");
+    });
     connect(m_cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
     connect(m_clearBtn,   &QPushButton::clicked, this, &MainWindow::onClear);
     connect(m_exportCsvBtn, &QPushButton::clicked, this, &MainWindow::onExportCSV);
@@ -319,7 +338,6 @@ void MainWindow::setupConnections()
             });
     connect(m_passTable, &QTableWidget::cellClicked,
             this, &MainWindow::onTableRowSelected);
-
     // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
     connect(m_visibleOnlyCheck, &QCheckBox::toggled, this, [this](bool) {
         if (m_currentPasses.isEmpty()) return;
@@ -420,6 +438,82 @@ void MainWindow::onBatchImport()
                 .arg(jobs.size()).arg(failed));
 
     m_service->startBatch(jobs);
+}
+
+// ============================================================================
+// 在线更新 TLE（CelesTrak）
+// ============================================================================
+void MainWindow::onOnlineUpdate()
+{
+    const QString groupId = m_tleGroupCombo->currentData().toString();
+    if (groupId.isEmpty()) return;
+    m_onlineUpdateBtn->setEnabled(false);
+    m_onlineUpdateBtn->setText("下载中…");
+    m_statusModel->setText(QString("模型: 正在下载 %1 的 TLE…")
+                           .arg(m_tleGroupCombo->currentText()));
+    m_tleFetcher->fetchGroup(groupId);
+}
+
+// ============================================================================
+// TLE 下载完成 → 解析并弹出批量导入对话框（预填文本）
+// ============================================================================
+void MainWindow::onTleDownloaded(QString rawText, QString groupId)
+{
+    const auto blocks = parseTleBlocks(rawText);
+    if (blocks.isEmpty()) {
+        QMessageBox::warning(this, "在线更新",
+            QString("组 [%1] 未解析到有效 TLE（可能是空数据或格式变化）")
+                .arg(groupId));
+        return;
+    }
+    m_statusModel->setText(QString("模型: 已下载 %1 颗卫星的 TLE").arg(blocks.size()));
+
+    BatchTleDialog dlg(this);
+    dlg.setWindowTitle(QString("批量导入 — 在线下载 (%1 颗)").arg(blocks.size()));
+    dlg.setText(rawText);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    QVector<PassPredictWorker::Job> jobs;
+    int failed = 0;
+    for (const auto &b : blocks) {
+        TleParser::ParseError parseErr;
+        auto tleOpt = TleParser::parse(b.line1.toStdString(), b.line2.toStdString(),
+                                       &parseErr);
+        if (!tleOpt) { ++failed; continue; }
+        PassPredictWorker::Job job;
+        fillJobFromUi(job);
+        job.tleLine0 = b.name;
+        job.tleLine1 = b.line1;
+        job.tleLine2 = b.line2;
+        jobs.append(job);
+    }
+    if (jobs.isEmpty()) {
+        QMessageBox::warning(this, "在线更新",
+            QString("共 %1 颗卫星，全部解析失败，请检查网络数据")
+                .arg(blocks.size()));
+        return;
+    }
+
+    m_batchMode = true;
+    m_batchErrors.clear();
+    m_predictBtn->setEnabled(false);
+    m_cancelBtn->setEnabled(true);
+    m_progressBar->setVisible(true);
+    m_progressBar->setRange(0, jobs.size());
+    m_progressBar->setValue(0);
+    m_statusModel->setText(QString("模型: 批量 %1 颗（在线）").arg(jobs.size()));
+    if (failed > 0)
+        m_statusModel->setText(
+            QString("模型: 批量 %1 颗（%2 颗解析失败跳过）")
+                .arg(jobs.size()).arg(failed));
+
+    m_service->startBatch(jobs);
+}
+
+void MainWindow::onTleError(QString message)
+{
+    m_statusModel->setText("模型: TLE 下载失败");
+    QMessageBox::warning(this, "在线更新失败", message);
 }
 
 // 从当前 UI 控件填充观测站参数与计算配置

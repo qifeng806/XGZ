@@ -6,6 +6,7 @@
 // =============================================================================
 #include <QWidget>
 #include <QVector>
+#include <QPolygonF>
 #include "core/models.h"
 
 class GroundTrackWidget : public QWidget {
@@ -26,6 +27,10 @@ private:
     int m_selectedIndex = -1;
     double m_obsLat = 0.0, m_obsLon = 0.0;
 
+    // 真实大陆轮廓（Natural Earth 110m，经度在 [-180,180] 内，无需断片）
+    QVector<QPolygonF> m_landPolygons;   // 点 = (latDeg, lonDeg)
+
+    bool loadLandData();                 // 从 :/land110m.txt 加载一次
     QPointF geoToScreen(double latDeg, double lonDeg,
                         double x0, double y0, double sx, double sy) const;
 };

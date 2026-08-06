@@ -1,0 +1,8 @@
+<!DOCTYPE RCC>
+<!-- 应用资源：Natural Earth 110m 陆地多边形（公共领域），
+     由 ne_110m_land.json 转换生成（127 多边形 / 5091 顶点） -->
+<RCC>
+    <qresource prefix="/">
+        <file alias="land110m.txt">land110m.txt</file>
+    </qresource>
+</RCC>

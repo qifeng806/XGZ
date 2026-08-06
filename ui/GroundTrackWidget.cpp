@@ -5,12 +5,54 @@
 #include "CatmullRom.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QFile>
+#include <QTextStream>
 #include <cmath>
 
 GroundTrackWidget::GroundTrackWidget(QWidget *parent)
     : QWidget(parent)
 {
     setMinimumSize(400, 250);
+    loadLandData();
+}
+
+// ============================================================================
+// loadLandData — 从 qrc 资源加载 Natural Earth 110m 陆地多边形
+// 格式: "P 名称" 开始一个多边形, 随后每行 "lat lon"（度，一位小数即 ~11km
+// 精度，适合 110m 比例尺），"E" 结束。所有多边形纬度跨度均 < 180°，
+// 直接绘制无需跨经线断片
+// ============================================================================
+bool GroundTrackWidget::loadLandData()
+{
+    QFile f(":/land110m.txt");
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+
+    QTextStream in(&f);
+    in.setEncoding(QStringConverter::Utf8);
+    QPolygonF cur;
+    QString line;
+    while (!(line = in.readLine()).isNull()) {
+        line = line.trimmed();
+        if (line.isEmpty()) continue;
+        if (line.startsWith('P')) {
+            if (!cur.isEmpty()) m_landPolygons.append(cur);
+            cur.clear();
+        } else if (line.startsWith('E')) {
+            if (!cur.isEmpty()) m_landPolygons.append(cur);
+            cur.clear();
+        } else {
+            const QStringList parts = line.split(' ');
+            if (parts.size() >= 2) {
+                bool ok1 = false, ok2 = false;
+                const double lat = parts[0].toDouble(&ok1);
+                const double lon = parts[1].toDouble(&ok2);
+                if (ok1 && ok2) cur.append(QPointF(lat, lon));
+            }
+        }
+    }
+    if (!cur.isEmpty()) m_landPolygons.append(cur);
+    return !m_landPolygons.isEmpty();
 }
 
 void GroundTrackWidget::setPasses(const QVector<PassEvent> &passes,
@@ -165,21 +207,17 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         }
     }
 
-    // 大陆轮廓简绘（数据在 resources/continent_data.txt，此处用简化版）
-    // 在实际部署中，加载多边形坐标文件进行绘制
+    // 真实大陆轮廓（Natural Earth 110m，qrc 资源加载）
     painter.setPen(QPen(QColor(60, 65, 75), 1));
     painter.setBrush(QColor(35, 40, 50));
-    // -- 亚洲简化轮廓 --
-    QPolygonF asia;
-    asia << geoToScreen(72, 55,   x0,y0,sx,sy) << geoToScreen(55, 37, x0,y0,sx,sy)
-         << geoToScreen(42, 48,   x0,y0,sx,sy) << geoToScreen(30, 40, x0,y0,sx,sy)
-         << geoToScreen(34, 25,   x0,y0,sx,sy) << geoToScreen(25, 60, x0,y0,sx,sy)
-         << geoToScreen(23, 68,   x0,y0,sx,sy) << geoToScreen(15, 74, x0,y0,sx,sy)
-         << geoToScreen(8,  76,   x0,y0,sx,sy) << geoToScreen(10, 78, x0,y0,sx,sy)
-         << geoToScreen(20, 80,   x0,y0,sx,sy) << geoToScreen(30, 82, x0,y0,sx,sy)
-         << geoToScreen(55, 80,   x0,y0,sx,sy) << geoToScreen(70, 68, x0,y0,sx,sy)
-         << geoToScreen(75, 72,   x0,y0,sx,sy) << geoToScreen(73, 56, x0,y0,sx,sy);
-    painter.drawPolygon(asia);
+    for (const auto &poly : m_landPolygons) {
+        if (poly.size() < 3) continue;
+        QPolygonF screen;
+        screen.reserve(poly.size());
+        for (const QPointF &pt : poly)
+            screen.append(geoToScreen(pt.x(), pt.y(), x0, y0, sx, sy));
+        painter.drawPolygon(screen);
+    }
 
     // 如果没有过境，显示提示
     if (m_passes.isEmpty()) {

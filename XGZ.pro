@@ -3,10 +3,12 @@
 # Qt 6.11.0 + qmake + C++17 + MinGW-w64
 # 集成 perturb 库 (gunvirranu/perturb, MIT) 作为 SGP4/SDP4 引擎
 # =============================================================================
-QT       += core gui widgets
+QT       += core gui widgets network
 CONFIG   += c++17
 TARGET    = XGZ
 TEMPLATE  = app
+
+RESOURCES += resources/resources.qrc
 
 # ---- Source Files ----
 SOURCES += \
@@ -16,11 +18,13 @@ SOURCES += \
     core/CoordTransform.cpp \
     core/Observer.cpp \
     core/SunPosition.cpp \
+    core/Nutation.cpp \
     core/EarthShadow.cpp \
     core/DopplerCalc.cpp \
     core/OrbitCalculator.cpp \
     business/PassPredictWorker.cpp \
     business/PassPredictorService.cpp \
+    business/TleFetcher.cpp \
     ui/MainWindow.cpp \
     ui/PolarPlotWidget.cpp \
     ui/GroundTrackWidget.cpp \
@@ -35,11 +39,13 @@ HEADERS += \
     core/CoordTransform.h \
     core/Observer.h \
     core/SunPosition.h \
+    core/Nutation.h \
     core/EarthShadow.h \
     core/DopplerCalc.h \
     core/OrbitCalculator.h \
     business/PassPredictWorker.h \
     business/PassPredictorService.h \
+    business/TleFetcher.h \
     ui/MainWindow.h \
     ui/PolarPlotWidget.h \
     ui/GroundTrackWidget.h \

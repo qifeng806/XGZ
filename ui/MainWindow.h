@@ -19,6 +19,7 @@
 #include <QDateTimeEdit>
 #include "core/models.h"
 #include "business/PassPredictorService.h"
+#include "business/TleFetcher.h"
 
 QT_BEGIN_NAMESPACE
 class PolarPlotWidget;
@@ -34,6 +35,9 @@ public:
 private slots:
     void onPredict();
     void onBatchImport();
+    void onOnlineUpdate();
+    void onTleDownloaded(QString rawText, QString groupId);
+    void onTleError(QString message);
     void onCancel();
     void onClear();
     void onExportCSV();
@@ -62,6 +66,7 @@ private:
     QSpinBox        *m_hoursSpin;
     QComboBox       *m_timezoneCombo;
     QComboBox       *m_darkSkyCombo;
+    QComboBox       *m_tleGroupCombo;
     QDoubleSpinBox  *m_freqSpin;
     QCheckBox       *m_visibleOnlyCheck;
     QDateTimeEdit   *m_startTimeEdit;
@@ -69,6 +74,7 @@ private:
     // 控制按钮
     QPushButton *m_predictBtn;
     QPushButton *m_batchImportBtn;
+    QPushButton *m_onlineUpdateBtn;
     QPushButton *m_cancelBtn;
     QPushButton *m_exportCsvBtn;
     QPushButton *m_exportKmlBtn;
@@ -94,6 +100,7 @@ private:
 
     // 业务层
     PassPredictorService *m_service;
+    TleFetcher *m_tleFetcher;
 };
 
 #endif // UI_MAINWINDOW_H
