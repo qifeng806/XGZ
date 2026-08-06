@@ -4,6 +4,7 @@
 #include "Propagator.h"
 #include "perturb-master/include/perturb/perturb.hpp"
 #include <cmath>
+#include <cstdlib>
 
 Propagator::Propagator() {}
 Propagator::~Propagator() {}   // unique_ptr 自动释放（此处需完整类型，已在下方 include）
@@ -70,6 +71,17 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
         // 获取历元
         perturb::JulianDate epoch = sat->epoch();
         m_epochJD = epoch.jd + epoch.jd_frac;
+
+        // NORAD 编号（elsetrec.satnum）与轨道模型类别（由平运动推导周期）
+        //   no_unkozai: 未作 Kozai 修正的平运动 (rad/min) ⇒ 周期 = 2π/no_unkozai
+        const auto &rec = sat->sat_rec;
+        m_noradID = std::atoi(rec.satnum);
+        if (m_name.empty()) m_name = rec.satnum;
+        const double periodMin = (rec.no_unkozai > 1e-12)
+            ? (2.0 * 3.14159265358979323846) / rec.no_unkozai : 0.0;
+        if (periodMin < 225.0)         m_modelType = Sgp4Type::LEO_SGP4;
+        else if (periodMin < 1440.0)   m_modelType = Sgp4Type::MEO_SDP4;
+        else                           m_modelType = Sgp4Type::GEO_SDP4_DS;
 
         m_satellite = std::move(sat);
     } catch (const std::exception &e) {

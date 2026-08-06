@@ -82,7 +82,7 @@ std::array<double, 3> CoordTransform::eciDirToEcef(
 }
 
 // ============================================================================
-// ecefToGeodetic — Bowring 1976 迭代法: ECEF → WGS84 经纬高
+// ecefToGeodetic — Bowring 1976 闭式解法: ECEF → WGS84 经纬高
 // ============================================================================
 GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
 {
@@ -99,19 +99,26 @@ GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
     // 经度（直接解析公式）
     double lonDeg = std::atan2(y, x) * 180.0 / PI;
 
-    // 纬度 — Bowring 迭代
-    double lat = std::atan2(z, (1.0 - e2) * r);  // 初始猜测
+    // 纬度 — Bowring 1976 闭式解（参数纬度 θ 一次性修正，精度 < 1e-9°）
+    //   θ = atan(z·a / (r·b))          参数纬度
+    //   φ = atan2(z + e'²·b·sin³θ, r − e²·a·cos³θ)
+    if (r < 1e-12) {
+        double latDeg = (z >= 0.0) ? 90.0 : -90.0;
+        double altKm = std::fabs(z) - b;
+        return GeoPos(latDeg, 0.0, altKm);
+    }
 
-    for (int i = 0; i < 5; ++i) {
-        double sinLat = std::sin(lat);
-        double N = a / std::sqrt(1.0 - e2 * sinLat * sinLat);
-        double latNew = std::atan2(z + ep2 * b * sinLat * sinLat * sinLat,
-                                   r - e2 * N * std::cos(lat));
-        if (std::abs(latNew - lat) < 1e-12) {
-            lat = latNew;
-            break;
-        }
-        lat = latNew;
+    double theta = std::atan2(z * a, r * b);
+    double sinT = std::sin(theta), cosT = std::cos(theta);
+    double lat = std::atan2(z + ep2 * b * sinT * sinT * sinT,
+                            r - e2 * a * cosT * cosT * cosT);
+
+    // 高度: 由卯酉圈半径 N(φ) 反解
+    for (int i = 0; i < 3; ++i) {
+        double sinL = std::sin(lat);
+        double Nl = a / std::sqrt(1.0 - e2 * sinL * sinL);
+        double h = r / std::cos(lat) - Nl;
+        lat = std::atan2(z, r * (1.0 - e2 * Nl / (Nl + h)));
     }
 
     double sinLat = std::sin(lat);

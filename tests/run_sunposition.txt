@@ -1,0 +1,2 @@
+Testing TstSunPosition
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 2ms

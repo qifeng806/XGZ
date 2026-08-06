@@ -178,13 +178,15 @@ std::optional<TleData> TleParser::parse(
 }
 
 // 模型分类
+// 与 Vallado SGP4/perturb 判据一致：轨道周期 ≥ 225 分钟（平运动 ≤ 6.4 rev/day）
+// → 深空模型 SDP4；否则近地 SGP4
 Sgp4Type TleParser::classifyModel(double meanMotionRevDay)
 {
-    if (meanMotionRevDay > 15.65)
+    if (meanMotionRevDay > 6.4)        // 周期 < 225 分钟 → 近地
         return Sgp4Type::LEO_SGP4;
-    else if (meanMotionRevDay >= 1.0)
+    else if (meanMotionRevDay >= 1.0)  // 周期 225 分钟 ~ 24 小时 → 深空/中轨
         return Sgp4Type::MEO_SDP4;
-    else
+    else                               // 周期 > 24 小时 → 深空/同步带
         return Sgp4Type::GEO_SDP4_DS;
 }
 
