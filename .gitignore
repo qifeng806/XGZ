@@ -1,8 +1,13 @@
 # 测试运行输出（每次运行重新生成）
 tests/run_*.txt
-tests/release/*.o
-tests/release/*.d
-tests/release/tst_xgz.exe
+
+# 构建产物
+tests/release/
 tests/debug/
-release/*.o
-release/XGZ.exe
+tests/Makefile*
+release/
+debug/
+build/
+Makefile*
+.qmake.stash
+.qtcreator/
