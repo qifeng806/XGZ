@@ -1,2 +1,2 @@
 Testing TstOrbitCalc
-Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 6ms
+Totals: 11 passed, 0 failed, 0 skipped, 0 blacklisted, 7ms

@@ -8,10 +8,17 @@
 #include "DopplerCalc.h"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+namespace {
+    constexpr double MU_KM3_S2   = 398600.8;   // 地球引力常数 km³/s²
+    constexpr double EXTEND_MIN   = 60.0;      // 跨窗口过境延长搜索（分钟）
+    constexpr double TCA_REFINE_SEC = 3.0;     // TCA 三分搜索初始半宽（秒）
+}
 
 // ========== 辅助：填充一次过境的完整详情 ==========
 static void fillPassDetails(PassEvent &ev,
@@ -36,17 +43,17 @@ static void fillPassDetails(PassEvent &ev,
                 auto eA = CoordTransform::eciToEcef(eciA->posKm, jdAOS);
                 // 太阳方向必须旋转到 ECEF 与卫星位置同系
                 auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
-                ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA);
+                ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
             }
             if (eciT) {
                 auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
                 auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
-                ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT);
+                ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
             }
             if (eciL) {
                 auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
                 auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
-                ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL);
+                ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
             }
         }
 
@@ -119,6 +126,25 @@ void OrbitCalculator::computeMoment(PropagateFn &propagate,
     geo  = obs.subSatPoint(ecef);
 }
 
+// ========== 过境弧段采样 ==========
+void OrbitCalculator::collectSamples(PropagateFn &propagate,
+                                      const Observer &obs,
+                                      double jdAOS, double jdLOS,
+                                      PassEvent &ev) const
+{
+    if (!m_cfg.enableSamples || m_cfg.sampleStepSec <= 0.0) return;
+    const double step = m_cfg.sampleStepSec / 86400.0;
+    ev.samples.clear();
+    ev.samples.reserve(static_cast<size_t>((jdLOS - jdAOS) / step) + 2);
+    for (double jd = jdAOS; jd <= jdLOS + 1e-12; jd += step) {
+        if (cancelled()) return;
+        LookAngle look;
+        GeoPos    geo;
+        computeMoment(propagate, obs, jd, look, geo);
+        ev.samples.push_back({ jdToIntMs(jd), look, geo });
+    }
+}
+
 // ========== 二分精化 AOS ==========
 double OrbitCalculator::bisectAOS(PropagateFn &propagate,
                                    const Observer &obs,
@@ -174,7 +200,7 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
     }
 
     // 标准三分搜索精化 TCA（单峰函数保证收敛，无平台发散问题）
-    double delta = 3.0 / 86400.0;  // 3 seconds in JD
+    const double delta = TCA_REFINE_SEC / 86400.0;  // seconds in JD
     double lo = bestJD - delta, hi = bestJD + delta;
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
         if (cancelled()) return;
@@ -241,7 +267,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     continue;
                 }
 
-                // ---- 组装 PassEvent ----
+                // 组装 PassEvent
                 PassEvent ev;
 
                 // AOS 时刻详情
@@ -257,6 +283,9 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                 ev.losJdMs = jdToIntMs(jdLOS);
 
                 ev.durationSec = durSec;
+
+                // 弧段采样（真实轨迹，供绘图/导出）
+                collectSamples(propagate, observer, jdAOS, jdLOS, ev);
 
                 // 卫星名称
                 ev.satelliteName = m_satName;
@@ -274,8 +303,8 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
 
     // ---- 跨 24h 边界处理 ----
     if (inPass) {
-        // 延长搜索最多 60 分钟
-        double jdExtend = jdEnd + 60.0 / 1440.0;
+        // 延长搜索最多 EXTEND_MIN 分钟
+        double jdExtend = jdEnd + EXTEND_MIN / 1440.0;
         for (double jd = jdEnd; jd < jdExtend; jd += stepDays) {
             if (cancelled()) return passes;
 
@@ -293,6 +322,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     computeMoment(propagate, observer, jdLOS, ev.losLook, ev.losSatGeo);
                     ev.losJdMs = jdToIntMs(jdLOS);
                     ev.durationSec = durSec;
+                    collectSamples(propagate, observer, jdAOS, jdLOS, ev);
                     ev.satelliteName = m_satName;
                     fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
                                     intMsToJd(ev.tcaJdMs), jdLOS);
@@ -322,6 +352,12 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().losSatShadow = passes[i].losSatShadow;
                     merged.back().losElRefracted = passes[i].losElRefracted;
                     merged.back().durationSec = (intMsToJd(merged.back().losJdMs) - intMsToJd(merged.back().aosJdMs)) * 86400.0;
+                    // 弧段采样: 追加后半段的点（保持时间单调，跳过重叠区）
+                    auto &dst = merged.back().samples;
+                    const int64_t lastT = dst.empty() ? std::numeric_limits<int64_t>::min()
+                                                      : dst.back().jdMs;
+                    for (const auto &s : passes[i].samples)
+                        if (s.jdMs > lastT) dst.push_back(s);
                 }
                 // 取较高的最大仰角
                 if (passes[i].maxElevDeg > merged.back().maxElevDeg) {

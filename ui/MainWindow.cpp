@@ -22,6 +22,106 @@
 #include <QTimeZone>
 
 // ============================================================================
+// 批量 TLE 导入辅助（文件局部）
+// ============================================================================
+namespace {
+
+// 批量导入对话框：多行 TLE 文本 + 从文件加载
+class BatchTleDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit BatchTleDialog(QWidget *parent = nullptr)
+        : QDialog(parent)
+    {
+        setWindowTitle("批量导入 TLE");
+        resize(760, 520);
+
+        auto *lay = new QVBoxLayout(this);
+        auto *hint = new QLabel(
+            "每颗卫星：可选名称行 + TLE 两行根数（也可直接两行），可粘贴多颗。\n"
+            "支持从 Celestrak / NORAD 下载的文本块（含注释头时自动忽略）。");
+        hint->setWordWrap(true);
+        lay->addWidget(hint);
+
+        m_edit = new QPlainTextEdit;
+        m_edit->setPlaceholderText(
+            "ISS (ZARYA)\n"
+            "1 25544U 98067A   24083.56167013  .00012345  00000-0  24655-3 0  9994\n"
+            "2 25544  51.6423  23.4567 0004567 123.4567 236.7890 15.50012345678901\n"
+            "\n"
+            "STARLINK-1001\n"
+            "1 44713U 19074A   24083.91234567  .00000000  00000-0  00000+0 0  1234\n"
+            "2 44713  53.0541  88.1234 0001234  45.6789 314.5678 15.06323456789012");
+        lay->addWidget(m_edit, 1);
+
+        auto *btnRow = new QHBoxLayout;
+        auto *loadBtn = new QPushButton("从文件加载");
+        auto *okBtn = new QPushButton("开始批量预报");
+        okBtn->setDefault(true);
+        auto *cancelBtn = new QPushButton("取消");
+        btnRow->addWidget(loadBtn);
+        btnRow->addStretch();
+        btnRow->addWidget(okBtn);
+        btnRow->addWidget(cancelBtn);
+        lay->addLayout(btnRow);
+
+        connect(loadBtn, &QPushButton::clicked, this, [this]() {
+            const QString path = QFileDialog::getOpenFileName(
+                this, "选择 TLE 文件", QString(),
+                "Text Files (*.txt);;All Files (*)");
+            if (path.isEmpty()) return;
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                QMessageBox::warning(this, "批量导入", "无法读取文件: " + path);
+                return;
+            }
+            m_edit->setPlainText(QString::fromUtf8(f.readAll()));
+        });
+        connect(okBtn, &QPushButton::clicked, this, &QDialog::accept);
+        connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    }
+
+    QString text() const { return m_edit->toPlainText(); }
+
+private:
+    QPlainTextEdit *m_edit;
+};
+
+// 一颗卫星的原始文本块
+struct TleBlock {
+    QString name;    // 名称行（可能为空）
+    QString line1;
+    QString line2;
+};
+
+// 解析多颗 TLE 文本块: 名称行(可选) + 行1 + 行2
+QVector<TleBlock> parseTleBlocks(const QString &text)
+{
+    QVector<TleBlock> blocks;
+    QString pendingName;
+    QString pendingL1;
+    const QStringList lines = text.split('\n');
+    for (const QString &raw : lines) {
+        const QString l = raw.trimmed();
+        if (l.isEmpty()) continue;
+        if (l.startsWith("1 ") || l.startsWith('1')) {
+            pendingL1 = l;
+        } else if (l.startsWith("2 ") || l.startsWith('2')) {
+            if (!pendingL1.isEmpty()) {
+                blocks.append({ pendingName, pendingL1, l });
+                pendingName.clear();
+                pendingL1.clear();
+            }
+        } else {
+            pendingName = l;   // 非 TLE 行视为下一颗卫星的名称
+        }
+    }
+    return blocks;
+}
+
+} // namespace
+
+// ============================================================================
 // 构建 UI
 // ============================================================================
 void MainWindow::setupUI()
@@ -126,6 +226,7 @@ void MainWindow::setupUI()
     auto *btnLayout = new QHBoxLayout;
     m_predictBtn = new QPushButton("▶ 开始预报");
     m_predictBtn->setStyleSheet("font-weight: bold; min-height: 32px;");
+    m_batchImportBtn = new QPushButton("批量导入");
     m_cancelBtn  = new QPushButton("✕ 取消");
     m_cancelBtn->setEnabled(false);
     m_exportCsvBtn = new QPushButton("导出 CSV");
@@ -134,6 +235,7 @@ void MainWindow::setupUI()
     m_clearBtn   = new QPushButton("清空");
 
     btnLayout->addWidget(m_predictBtn);
+    btnLayout->addWidget(m_batchImportBtn);
     btnLayout->addWidget(m_cancelBtn);
     btnLayout->addWidget(m_exportCsvBtn);
     btnLayout->addWidget(m_exportKmlBtn);
@@ -199,6 +301,7 @@ void MainWindow::setupConnections()
     m_service = new PassPredictorService(this);
 
     connect(m_predictBtn, &QPushButton::clicked, this, &MainWindow::onPredict);
+    connect(m_batchImportBtn, &QPushButton::clicked, this, &MainWindow::onBatchImport);
     connect(m_cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
     connect(m_clearBtn,   &QPushButton::clicked, this, &MainWindow::onClear);
     connect(m_exportCsvBtn, &QPushButton::clicked, this, &MainWindow::onExportCSV);
@@ -209,6 +312,11 @@ void MainWindow::setupConnections()
             this, &MainWindow::onResultsReady);
     connect(m_service, &PassPredictorService::errorOccurred,
             this, &MainWindow::onError);
+    connect(m_service, &PassPredictorService::batchProgress,
+            this, [this](int completed, int total) {
+                m_progressBar->setRange(0, total);
+                m_progressBar->setValue(completed);
+            });
     connect(m_passTable, &QTableWidget::cellClicked,
             this, &MainWindow::onTableRowSelected);
 
@@ -244,14 +352,79 @@ void MainWindow::onPredict()
         return;
     }
 
+    PassPredictWorker::Job job;
+    fillJobFromUi(job);
+    job.tleLine1 = tle1;
+    job.tleLine2 = tle2;
+
+    m_batchMode = false;
+    m_batchErrors.clear();
     m_predictBtn->setEnabled(false);
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, 0);  // 不确定进度
 
-    PassPredictWorker::Job job;
-    job.tleLine1      = tle1;
-    job.tleLine2      = tle2;
+    m_service->startJob(job);
+}
+
+// ============================================================================
+// 批量导入
+// ============================================================================
+void MainWindow::onBatchImport()
+{
+    BatchTleDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const auto blocks = parseTleBlocks(dlg.text());
+    if (blocks.isEmpty()) {
+        QMessageBox::warning(this, "批量导入", "未识别到有效的 TLE 两行根数");
+        return;
+    }
+
+    QVector<PassPredictWorker::Job> jobs;
+    int failed = 0;
+    for (const auto &b : blocks) {
+        TleParser::ParseError parseErr;
+        auto tleOpt = TleParser::parse(b.line1.toStdString(), b.line2.toStdString(),
+                                       &parseErr);
+        if (!tleOpt) {
+            ++failed;
+            continue;
+        }
+        PassPredictWorker::Job job;
+        fillJobFromUi(job);
+        job.tleLine0 = b.name;
+        job.tleLine1 = b.line1;
+        job.tleLine2 = b.line2;
+        jobs.append(job);
+    }
+
+    if (jobs.isEmpty()) {
+        QMessageBox::warning(this, "批量导入",
+            QString("共 %1 颗卫星，全部解析失败，请检查 TLE 内容")
+                .arg(blocks.size()));
+        return;
+    }
+
+    m_batchMode = true;
+    m_batchErrors.clear();
+    m_predictBtn->setEnabled(false);
+    m_cancelBtn->setEnabled(true);
+    m_progressBar->setVisible(true);
+    m_progressBar->setRange(0, jobs.size());
+    m_progressBar->setValue(0);
+    m_statusModel->setText(QString("模型: 批量 %1 颗").arg(jobs.size()));
+    if (failed > 0)
+        m_statusModel->setText(
+            QString("模型: 批量 %1 颗（%2 颗解析失败跳过）")
+                .arg(jobs.size()).arg(failed));
+
+    m_service->startBatch(jobs);
+}
+
+// 从当前 UI 控件填充观测站参数与计算配置
+void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
+{
     job.observerLatDeg = m_latSpin->value();
     job.observerLonDeg = m_lonSpin->value();
     job.observerAltKm  = m_altSpin->value();
@@ -268,13 +441,13 @@ void MainWindow::onPredict()
     job.calcCfg.enableDoppler      = true;
     job.calcCfg.carrierFreqMHz     = m_freqSpin->value();
     job.calcCfg.darkSkyThresholdDeg = m_darkSkyCombo->currentData().toDouble();
-
-    m_service->startJob(job);
 }
 
 void MainWindow::onCancel()
 {
     m_service->cancelAll();
+    m_batchMode = false;
+    m_batchErrors.clear();
     m_predictBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
@@ -323,6 +496,18 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     m_statusCount->setText(QString("过境: %1 (可见: %2)")
         .arg(m_currentPasses.size()).arg(visCount));
 
+    // 批量模式收尾: 汇总失败信息（若有）
+    if (m_batchMode) {
+        m_batchMode = false;
+        if (!m_batchErrors.isEmpty()) {
+            QMessageBox::warning(this, "批量预报",
+                QString("%1 颗卫星预报失败:\n%2")
+                    .arg(m_batchErrors.size())
+                    .arg(m_batchErrors.join("\n")));
+            m_batchErrors.clear();
+        }
+    }
+
     m_predictBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
@@ -330,6 +515,12 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
 
 void MainWindow::onError(QString msg)
 {
+    if (m_batchMode) {
+        // 批量模式: 不弹阻塞对话框，累计到结果时统一汇总
+        m_batchErrors << msg;
+        m_statusModel->setText(QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
+        return;
+    }
     QMessageBox::warning(this, "错误", msg);
     m_predictBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
@@ -519,10 +710,16 @@ void MainWindow::onExportKML()
             << p.maxElevDeg << "°</name>\n"
             << "<description>Duration: " << p.durationSec << "s</description>\n"
             << "<LineString><coordinates>";
-        // 简化：仅绘制 AOS-TCA-LOS 三点的简单线
-        out << p.aosSatGeo.lonDeg << "," << p.aosSatGeo.latDeg << ",0 ";
-        out << p.tcaSatGeo.lonDeg << "," << p.tcaSatGeo.latDeg << ",0 ";
-        out << p.losSatGeo.lonDeg << "," << p.losSatGeo.latDeg << ",0";
+        // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点
+        if (p.samples.size() >= 2) {
+            for (const auto &s : p.samples) {
+                out << s.geo.lonDeg << "," << s.geo.latDeg << ",0 ";
+            }
+        } else {
+            out << p.aosSatGeo.lonDeg << "," << p.aosSatGeo.latDeg << ",0 ";
+            out << p.tcaSatGeo.lonDeg << "," << p.tcaSatGeo.latDeg << ",0 ";
+            out << p.losSatGeo.lonDeg << "," << p.losSatGeo.latDeg << ",0 ";
+        }
         out << "</coordinates></LineString>\n</Placemark>\n";
     }
     out << "</Document>\n</kml>\n";
@@ -580,3 +777,5 @@ MainWindow::~MainWindow()
 {
     // 服务对象由 Qt 父子关系自动管理，无需显式调用
 }
+
+#include "MainWindow.moc"

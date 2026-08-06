@@ -76,6 +76,7 @@ private slots:
     void propagationFailureTolerated();
     void cooperativeCancellation();
     void mergeAndMinDuration();
+    void samplesCoverPass();
 };
 
 void TstOrbitCalc::predictFindsPasses()
@@ -281,6 +282,50 @@ void TstOrbitCalc::mergeAndMinDuration()
     cfgDur.minDurationSec = 900.0;
     OrbitCalculator calcC(cfgDur);
     QVERIFY(calcC.predict(keplerFn(90.0), obs, JD0, 24.0).empty());
+}
+
+void TstOrbitCalc::samplesCoverPass()
+{
+    Observer obs(60.0, 0.0, 0.0, 10.0);
+    OrbitCalculator calc;
+    auto passes = calc.predict(keplerFn(90.0), obs, JD0, 24.0);
+    QVERIFY(passes.size() >= 4);
+
+    const auto &ev = passes[0];
+    QVERIFY2(!ev.samples.empty(), "过境弧段未采样");
+    QVERIFY(ev.samples.size() >= 10);
+
+    // 采样时间单调递增且位于 [AOS, LOS] 内
+    int64_t prev = ev.samples.front().jdMs;
+    QVERIFY(prev >= ev.aosJdMs);
+    for (size_t k = 1; k < ev.samples.size(); ++k) {
+        QVERIFY(ev.samples[k].jdMs > prev);
+        prev = ev.samples[k].jdMs;
+    }
+    QVERIFY(prev <= ev.losJdMs);
+
+    // 采样步长 ≈ 15 s（截断误差 ≤ 1 ms）
+    const double stepSec = (ev.samples[1].jdMs - ev.samples[0].jdMs) / 1000.0;
+    QVERIFY2(std::abs(stepSec - 15.0) < 0.5,
+             qPrintable(QString("采样步长=%.3f s").arg(stepSec)));
+
+    // 采样点仰角 ≥ 掩蔽角（允许二分残余误差）
+    for (const auto &s : ev.samples) {
+        QVERIFY(s.look.elevDeg >= 10.0 - 0.1);
+        QVERIFY(s.look.rangeKm > 0.0);
+    }
+
+    // 首/末采样时刻与 AOS/LOS 时刻一致（±1 步长）
+    QVERIFY(std::abs(ev.samples.front().jdMs - ev.aosJdMs) < 16000);
+    QVERIFY(std::abs(ev.samples.back().jdMs - ev.losJdMs) < 16000);
+
+    // 关闭采样 → 空
+    OrbitCalculator::Config cfg;
+    cfg.enableSamples = false;
+    OrbitCalculator calcNo(cfg);
+    auto passes2 = calcNo.predict(keplerFn(90.0), obs, JD0, 24.0);
+    QVERIFY(!passes2.empty());
+    for (const auto &p : passes2) QVERIFY(p.samples.empty());
 }
 
 int runTstOrbitCalc(int argc, char *argv[])

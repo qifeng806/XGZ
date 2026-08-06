@@ -28,6 +28,8 @@ public:
         bool   enableDoppler       = false;
         double carrierFreqMHz      = 437.800;
         bool   enableRefraction    = true;
+        bool   enableSamples       = true;   // 采集过境弧段采样点
+        double sampleStepSec       = 15.0;   // 弧段采样步长（秒）
         Config() = default;
     };
 
@@ -67,6 +69,10 @@ private:
 
     void computeMoment(PropagateFn &propagate, const Observer &obs,
                        double jd, LookAngle &look, GeoPos &geo) const;
+
+    // 在 [AOS, LOS] 内等步长采集弧段采样点（填 PassEvent::samples）
+    void collectSamples(PropagateFn &propagate, const Observer &obs,
+                        double jdAOS, double jdLOS, PassEvent &ev) const;
 
     static int64_t jdToIntMs(double jd);
     static double intMsToJd(int64_t ms);

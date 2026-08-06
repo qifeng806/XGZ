@@ -1,2 +1,2 @@
 Testing TstCoordTransform
-Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 0ms

@@ -7,6 +7,7 @@
 // =============================================================================
 #include "models.h"
 #include <array>
+#include <utility>
 
 class CoordTransform {
 public:
@@ -32,6 +33,13 @@ public:
     // 用于太阳方向等单位矢量：必须与卫星位置处于同一坐标系才能做点积
     static std::array<double, 3> eciDirToEcef(
         const std::array<double, 3> &dirTeme, double jdUt1);
+
+    // ---- TEME 位置+速度 → ECEF（含地球自转哥里奥利项） ----
+    // velECEF = R(θ)·velTeme − ω×rECEF，ω = 地球自转角速度
+    // 返回 {posECEF, velECEF}，供多普勒等需要地面系速度的场合
+    static std::pair<std::array<double, 3>, std::array<double, 3>>
+        eciStateToEcef(const std::array<double, 3> &posTeme,
+                       const std::array<double, 3> &velTeme, double jdUt1);
 
     // ---- ECEF → 大地经纬高（Bowring 1976 迭代法） ----
     static GeoPos ecefToGeodetic(const std::array<double, 3> &ecef);

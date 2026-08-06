@@ -65,7 +65,12 @@ SunPosition SunPositionCalc::compute(const double jd,
                      + 0.000289 * std::sin(3.0 * M));
 
     // ---- Step 5: 太阳视黄经 λ ----
+    // 加上光行差与黄经章动主项修正 (Meeus 25.9):
+    //   Δλ = −0.00569° − 0.00478°·sin(Ω)，Ω = 125.04° − 1934.136°·T(儒略世纪)
+    // 使 RA/Dec 从几何位置提升到视位置（精度 ≈ 0.01° 量级）
     double lambda = wrap2Pi(L0 + C);
+    double omega  = deg2rad(125.04 - 1934.136 * (T * 10.0));
+    lambda = wrap2Pi(lambda + deg2rad(-0.00569 - 0.00478 * std::sin(omega)));
 
     // ---- Step 6: 黄赤交角 ε ----
     double eps = deg2rad(23.43929111

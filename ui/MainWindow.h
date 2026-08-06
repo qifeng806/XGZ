@@ -33,6 +33,7 @@ public:
 
 private slots:
     void onPredict();
+    void onBatchImport();
     void onCancel();
     void onClear();
     void onExportCSV();
@@ -46,6 +47,8 @@ private:
     void setupUI();
     void setupConnections();
     void populateTable(const QVector<PassEvent> &passes);
+    // 从当前 UI 控件填充 Job 的观测站参数与计算配置
+    void fillJobFromUi(PassPredictWorker::Job &job) const;
     QVector<PassEvent> m_currentPasses;    // 原始全部过境
     QVector<PassEvent> m_filteredPasses;   // 过滤后（导出用）
 
@@ -65,11 +68,16 @@ private:
 
     // 控制按钮
     QPushButton *m_predictBtn;
+    QPushButton *m_batchImportBtn;
     QPushButton *m_cancelBtn;
     QPushButton *m_exportCsvBtn;
     QPushButton *m_exportKmlBtn;
     QPushButton *m_exportJsonBtn;
     QPushButton *m_clearBtn;
+
+    // 批量模式状态
+    bool m_batchMode = false;         // 当前是否为批量预报
+    QStringList m_batchErrors;        // 批量中各任务错误信息（汇总显示）
 
     // 状态栏
     QLabel       *m_statusModel;

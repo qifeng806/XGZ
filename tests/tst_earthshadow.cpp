@@ -1,5 +1,5 @@
 // =============================================================================
-// tst_earthshadow.cpp — 地影判定单元测试（圆柱模型）
+// tst_earthshadow.cpp — 地影判定单元测试（圆锥模型: 本影/半影/全日照）
 // =============================================================================
 #include <QtTest/QtTest>
 #include <cmath>
@@ -7,13 +7,37 @@
 #include "core/CoordTransform.h"
 #include "tst_runners.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+namespace {
+constexpr double RE = EarthShadow::EARTH_RADIUS_KM;
+
+// 视半径（与实现同公式）
+double rhoEarth(double r) { return std::asin(RE / r); }
+double rhoSun(double distAU) {
+    return std::asin(EarthShadow::SUN_RADIUS_KM / (distAU * EarthShadow::AU_KM));
+}
+
+// 构造夜侧卫星: 太阳方向为 +Y, 反太阳方向为 −Y
+// 卫星 = r·(sinθ, −cosθ, 0)，θ = 与反太阳方向的夹角
+std::array<double, 3> nightSat(double r, double thetaDeg)
+{
+    const double th = thetaDeg * M_PI / 180.0;
+    return { r * std::sin(th), -r * std::cos(th), 0.0 };
+}
+} // namespace
+
 class TstEarthShadow : public QObject {
     Q_OBJECT
 private slots:
     void daySide();
     void nightSideUmbra();
+    void penumbraBand();
+    void coneBoundaries();
+    void sunDistanceEffect();
     void farFromAxis();
-    void shadowBoundary();
     void frameRotationMatters();
 };
 
@@ -27,21 +51,16 @@ void TstEarthShadow::daySide()
     // 卫星与太阳同方向（正前方远处）→ 全日照
     QCOMPARE(EarthShadow::checkShadow({20000.0, 0.0, 0.0}, {1.0, 0.0, 0.0}),
              ShadowStatus::FullSunlight);
-
-    // 卫星在夜侧但离地轴很远 → 全日照（俯视越轴上方）
-    std::array<double, 3> far = {7000.0, 6778.137, 0.0};
-    QCOMPARE(EarthShadow::checkShadow(far, {0.0, -1.0, 0.0}),
-             ShadowStatus::FullSunlight);
 }
 
 void TstEarthShadow::nightSideUmbra()
 {
-    // 卫星在夜侧且紧贴地轴（距轴 < 地球半径）→ 本影
+    // 卫星在夜侧且正对地轴（theta = 0）→ 本影
     std::array<double, 3> leo = {0.0, 6778.137, 0.0};
     QCOMPARE(EarthShadow::checkShadow(leo, {0.0, -1.0, 0.0}),
              ShadowStatus::InUmbra);
 
-    // 距轴 5000 km < 6371 km → 本影
+    // 距轴 5000 km, theta = atan(5000/6778) = 36.4° << 本影界 → 本影
     QCOMPARE(EarthShadow::checkShadow({5000.0, 6778.137, 0.0}, {0.0, -1.0, 0.0}),
              ShadowStatus::InUmbra);
 
@@ -54,31 +73,78 @@ void TstEarthShadow::nightSideUmbra()
     // 卫星贴着地球背面反方向 → 日侧（地心在中间）
     QCOMPARE(EarthShadow::checkShadow({0.0, -6378.137, 0.0}, {0.0, -1.0, 0.0}),
              ShadowStatus::FullSunlight);
+
+    // GEO 卫星夜间正中 → 本影（真实 GEO 食）
+    QCOMPARE(EarthShadow::checkShadow({0.0, -42164.0, 0.0}, {0.0, 1.0, 0.0}),
+             ShadowStatus::InUmbra);
+}
+
+void TstEarthShadow::penumbraBand()
+{
+    // LEO 高度 400km: rhoE = 70.23°, rhoS = 0.27°
+    // 本影界 69.96° < theta < 70.49° 之间为半影
+    const double r = 6778.137;
+    const double uLow  = rhoEarth(r) - rhoSun(1.0);
+    const double uHigh = rhoEarth(r) + rhoSun(1.0);
+
+    const double mid = (uLow + uHigh) / 2.0;
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, mid * 180.0 / M_PI), {0.0, 1.0, 0.0}),
+             ShadowStatus::InPenumbra);
+
+    // GEO: rhoE = 8.70°: 8.44° < theta < 8.97° 半影
+    const double rg = 42164.0;
+    QCOMPARE(EarthShadow::checkShadow(nightSat(rg, 8.7), {0.0, 1.0, 0.0}),
+             ShadowStatus::InPenumbra);
+
+    // theta 超出半影上界 → 全日照
+    QCOMPARE(EarthShadow::checkShadow(nightSat(rg, 9.1), {0.0, 1.0, 0.0}),
+             ShadowStatus::FullSunlight);
+}
+
+void TstEarthShadow::coneBoundaries()
+{
+    // 边界精确性: 在由同一套常数算出的圆锥边界 ±1e-9 rad 处
+    const double r = 8000.0;
+    const double uLow  = rhoEarth(r) - rhoSun(1.0);
+    const double uHigh = rhoEarth(r) + rhoSun(1.0);
+    const double deg = 180.0 / M_PI;
+
+    // 本影下界内侧 → 本影; 外侧 → 半影
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uLow - 1e-9) * deg), {0.0, 1.0, 0.0}),
+             ShadowStatus::InUmbra);
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uLow + 1e-9) * deg), {0.0, 1.0, 0.0}),
+             ShadowStatus::InPenumbra);
+
+    // 半影上界内侧 → 半影; 外侧 → 全日照
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uHigh - 1e-9) * deg), {0.0, 1.0, 0.0}),
+             ShadowStatus::InPenumbra);
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uHigh + 1e-9) * deg), {0.0, 1.0, 0.0}),
+             ShadowStatus::FullSunlight);
+}
+
+void TstEarthShadow::sunDistanceEffect()
+{
+    // 太阳越近 → 视半径越大 → 本影越小
+    const double r = 42164.0;         // GEO
+    const double theta = 8.2;         // 8.17°(0.5AU 本影界) < 8.2° < 8.44°(1AU 本影界)
+
+    // 1 AU: theta < 本影界 → 本影
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, theta), {0.0, 1.0, 0.0}, 1.0),
+             ShadowStatus::InUmbra);
+    // 0.5 AU: theta > 本影界 → 退为半影
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, theta), {0.0, 1.0, 0.0}, 0.5),
+             ShadowStatus::InPenumbra);
+    // 非法距离（0）→ 按 1 AU 处理
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, theta), {0.0, 1.0, 0.0}, 0.0),
+             ShadowStatus::InUmbra);
 }
 
 void TstEarthShadow::farFromAxis()
 {
-    // 距轴 8000 km > 6371 km → 全日照
-    std::array<double, 3> sat = {8000.0, 6778.137, 0.0};
-    QCOMPARE(EarthShadow::checkShadow(sat, {0.0, -1.0, 0.0}),
-             ShadowStatus::FullSunlight);
-}
-
-void TstEarthShadow::shadowBoundary()
-{
-    // 边界: 距轴恰为地球半径 → 临界（严格小于才判本影）
-    std::array<double, 3> onEdge = {6371.0, 6371.0, 0.0};
-    QCOMPARE(EarthShadow::checkShadow(onEdge, {0.0, -1.0, 0.0}),
-             ShadowStatus::FullSunlight);
-
-    // 距轴略小于半径 → 本影
-    std::array<double, 3> inEdge = {6371.0 - 1e-4, 6371.0, 0.0};
-    QCOMPARE(EarthShadow::checkShadow(inEdge, {0.0, -1.0, 0.0}),
-             ShadowStatus::InUmbra);
-
-    // 距轴略大于半径 → 全日照
-    std::array<double, 3> outEdge = {6371.0 + 1e-4, 6371.0, 0.0};
-    QCOMPARE(EarthShadow::checkShadow(outEdge, {0.0, -1.0, 0.0}),
+    // 夜侧但偏离轴很远: theta = atan(8000/6778) = 49.7°
+    // rhoE = asin(6378/10485) = 37.5° < 49.7° → 全日照
+    std::array<double, 3> sat = {8000.0, -6778.137, 0.0};
+    QCOMPARE(EarthShadow::checkShadow(sat, {0.0, 1.0, 0.0}),
              ShadowStatus::FullSunlight);
 }
 

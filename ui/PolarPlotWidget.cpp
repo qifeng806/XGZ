@@ -120,27 +120,38 @@ void PolarPlotWidget::paintEvent(QPaintEvent *)
         painter.setPen(QPen(QColor(80, 80, 80), 1));
     }
 
-    // 绘制各过境的仰角-方位角曲线（全部以半透明绘制）
-    QVector<QColor> passColors = {
-        QColor(100, 200, 255), QColor(255, 180, 80),
-        QColor(150, 255, 150), QColor(255, 130, 130),
-        QColor(200, 160, 255), QColor(255, 255, 120)
-    };
+        // 绘制各过境的仰角-方位角曲线（全部以半透明绘制）
+        QVector<QColor> passColors = {
+            QColor(100, 200, 255), QColor(255, 180, 80),
+            QColor(150, 255, 150), QColor(255, 130, 130),
+            QColor(200, 160, 255), QColor(255, 255, 120)
+        };
 
-    for (int pi = 0; pi < m_passes.size(); ++pi) {
-        const auto &p = m_passes[pi];
-        bool isSelected = (pi == m_selectedIndex);
-        QColor col = passColors[pi % passColors.size()];
-        if (!isSelected) col.setAlpha(80);
+        for (int pi = 0; pi < m_passes.size(); ++pi) {
+            const auto &p = m_passes[pi];
+            bool isSelected = (pi == m_selectedIndex);
+            QColor col = passColors[pi % passColors.size()];
+            if (!isSelected) col.setAlpha(80);
 
-        // 简化：绘制 AOS → TCA → LOS 的二次贝塞尔近似
-        QPointF aosP = polarToScreen(p.aosLook.azDeg, p.aosLook.elevDeg, cx, cy, radius);
-        QPointF tcaP = polarToScreen(p.tcaLook.azDeg, p.maxElevDeg, cx, cy, radius);
-        QPointF losP = polarToScreen(p.losLook.azDeg, p.losLook.elevDeg, cx, cy, radius);
+            QPainterPath path;
+            // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
+            QPointF aosP = polarToScreen(p.aosLook.azDeg, p.aosLook.elevDeg, cx, cy, radius);
+            QPointF tcaP = polarToScreen(p.tcaLook.azDeg, p.maxElevDeg, cx, cy, radius);
+            QPointF losP = polarToScreen(p.losLook.azDeg, p.losLook.elevDeg, cx, cy, radius);
 
-        QPainterPath path;
-        path.moveTo(aosP);
-        path.quadTo(tcaP, losP);
+            if (p.samples.size() >= 2) {
+                // 真实弧段: 逐点折线（OrbitCalculator 采样）
+                path.moveTo(polarToScreen(p.samples[0].look.azDeg,
+                                          p.samples[0].look.elevDeg, cx, cy, radius));
+                for (size_t k = 1; k < p.samples.size(); ++k) {
+                    path.lineTo(polarToScreen(p.samples[k].look.azDeg,
+                                              p.samples[k].look.elevDeg, cx, cy, radius));
+                }
+            } else {
+                // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
+                path.moveTo(aosP);
+                path.quadTo(tcaP, losP);
+            }
 
         painter.setPen(QPen(col, isSelected ? 3 : 1));
         painter.setBrush(Qt::NoBrush);

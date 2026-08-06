@@ -113,17 +113,25 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         QColor col = trackColors[pi % trackColors.size()];
         if (!isSelected) col.setAlpha(60);
 
-        QPointF aosP = geoToScreen(p.aosSatGeo.latDeg, p.aosSatGeo.lonDeg,
-                                    x0, y0, sx, sy);
-        QPointF tcaP = geoToScreen(p.tcaSatGeo.latDeg, p.tcaSatGeo.lonDeg,
-                                    x0, y0, sx, sy);
-        QPointF losP = geoToScreen(p.losSatGeo.latDeg, p.losSatGeo.lonDeg,
-                                    x0, y0, sx, sy);
-
-        // 贝塞尔曲线近似地面轨迹
         QPainterPath trackPath;
-        trackPath.moveTo(aosP);
-        trackPath.quadTo(tcaP, losP);
+        // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
+        QPointF aosP = geoToScreen(p.aosSatGeo.latDeg, p.aosSatGeo.lonDeg, x0, y0, sx, sy);
+        QPointF tcaP = geoToScreen(p.tcaSatGeo.latDeg, p.tcaSatGeo.lonDeg, x0, y0, sx, sy);
+        QPointF losP = geoToScreen(p.losSatGeo.latDeg, p.losSatGeo.lonDeg, x0, y0, sx, sy);
+
+        if (p.samples.size() >= 2) {
+            // 真实地面轨迹: 逐点折线（OrbitCalculator 采样）
+            trackPath.moveTo(geoToScreen(p.samples[0].geo.latDeg, p.samples[0].geo.lonDeg,
+                                         x0, y0, sx, sy));
+            for (size_t k = 1; k < p.samples.size(); ++k) {
+                trackPath.lineTo(geoToScreen(p.samples[k].geo.latDeg, p.samples[k].geo.lonDeg,
+                                             x0, y0, sx, sy));
+            }
+        } else {
+            // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
+            trackPath.moveTo(aosP);
+            trackPath.quadTo(tcaP, losP);
+        }
         painter.setPen(QPen(col, isSelected ? 2 : 1));
         painter.setBrush(Qt::NoBrush);
         painter.drawPath(trackPath);

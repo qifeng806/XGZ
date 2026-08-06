@@ -82,6 +82,36 @@ std::array<double, 3> CoordTransform::eciDirToEcef(
 }
 
 // ============================================================================
+// eciStateToEcef — TEME 位置+速度 → ECEF（含地球自转哥里奥利项）
+// ============================================================================
+std::pair<std::array<double, 3>, std::array<double, 3>>
+CoordTransform::eciStateToEcef(const std::array<double, 3> &posTeme,
+                               const std::array<double, 3> &velTeme,
+                               double jdUt1)
+{
+    double theta = gmstRad(jdUt1);
+    double c = std::cos(theta);
+    double s = std::sin(theta);
+
+    std::array<double, 3> posEcef = {
+        posTeme[0] * c + posTeme[1] * s,
+       -posTeme[0] * s + posTeme[1] * c,
+        posTeme[2]
+    };
+
+    // 惯性速度先旋转到地面系参考，再减去地球自转牵连速度:
+    // v_ECEF = R(θ)·v_TEME − ω×r_ECEF
+    // ω×r = (0, 0, ω)×(rx, ry, rz) = (−ω·ry, ω·rx, 0)
+    constexpr double OMEGA_EARTH_RAD_S = 7.292115e-5;
+    std::array<double, 3> velEcef = {
+        velTeme[0] * c + velTeme[1] * s + OMEGA_EARTH_RAD_S * posEcef[1],
+       -velTeme[0] * s + velTeme[1] * c - OMEGA_EARTH_RAD_S * posEcef[0],
+        velTeme[2]
+    };
+    return { posEcef, velEcef };
+}
+
+// ============================================================================
 // ecefToGeodetic — Bowring 1976 闭式解法: ECEF → WGS84 经纬高
 // ============================================================================
 GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)

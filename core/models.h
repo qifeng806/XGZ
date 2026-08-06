@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <array>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // 轨道模型类别
@@ -123,7 +124,16 @@ enum class PassQuality {
 };
 
 // ---------------------------------------------------------------------------
-// 一次完整过境事件（共 22 个字段）
+// 过境弧段采样点（绘图/导出用，由 OrbitCalculator 在过境区间内等步长采集）
+// ---------------------------------------------------------------------------
+struct PassSample {
+    int64_t  jdMs = 0;    // 时刻（毫秒儒略日）
+    LookAngle look;       // 站心观测角（仰角/方位角/斜距）
+    GeoPos    geo;        // 星下点（经纬高）
+};
+
+// ---------------------------------------------------------------------------
+// 一次完整过境事件（共 22 个字段 + 弧段采样）
 // 时刻统一用 int64_t 毫秒儒略日，参考点为 JD 原点（JD×86400000 取整），
 // 与 Unix epoch 毫秒（1970-01-01）不同，转换公式：
 //   epoch_ms = jdMs − 210866760000000LL   （即减去 2440587.5 × 86400000）
@@ -162,6 +172,9 @@ struct PassEvent {
     PassQuality  quality         = PassQuality::Poor;
     PassVisibility visibility   = PassVisibility::Daylight;
     double       dopplerAtTcaKHz = 0.0;  // TCA 时刻多普勒频移（kHz）
+
+    // 过境弧段采样（AOS→LOS 等步长采样，供极坐标/地面轨迹绘图与 KML 导出）
+    std::vector<PassSample> samples;
 };
 
 #endif // CORE_MODELS_H

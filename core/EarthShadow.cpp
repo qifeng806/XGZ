@@ -1,40 +1,49 @@
 // =============================================================================
-// EarthShadow.cpp — 圆柱形地影近似判定
+// EarthShadow.cpp — 圆锥形地影判定实现
 // =============================================================================
 #include "EarthShadow.h"
 #include <cmath>
 
+namespace {
+    // 夹取到 [-1, 1]（防 asin/acos 越界 → NaN）
+    inline double clampUnit(double x)
+    {
+        if (x > 1.0) return 1.0;
+        if (x < -1.0) return -1.0;
+        return x;
+    }
+}
+
 ShadowStatus EarthShadow::checkShadow(const std::array<double, 3> &satECEF,
-                                       const std::array<double, 3> &sunDirECEF)
+                                       const std::array<double, 3> &sunDirECEF,
+                                       double sunDistAU)
 {
-    // 圆柱形地影近似:
-    // 地影 = 以地心-太阳连线为轴、半径 R_earth 的无限长圆柱体
-    //
-    // 条件1: 卫星在夜侧（卫星到太阳方向的分量为负 → 地心-卫星矢量和太阳方向夹角 > 90°）
-    // 条件2: 卫星到日地轴线的垂距 < R_earth
-    //
-    // 注意: satECEF 与 sunDirECEF 必须在同一坐标系（地固系）
+    // ---- 日侧判定: 卫星到太阳方向分量为正 → 夹角 < 90° → 全日照 ----
+    const double dotProduct = satECEF[0] * sunDirECEF[0]
+                            + satECEF[1] * sunDirECEF[1]
+                            + satECEF[2] * sunDirECEF[2];
 
-    double dotProduct = satECEF[0] * sunDirECEF[0]
-                      + satECEF[1] * sunDirECEF[1]
-                      + satECEF[2] * sunDirECEF[2];
+    const double r = std::sqrt(satECEF[0] * satECEF[0]
+                             + satECEF[1] * satECEF[1]
+                             + satECEF[2] * satECEF[2]);
+    if (r < 1e-9) return ShadowStatus::FullSunlight;   // 地心点无意义，按日照
 
-    // 如果 dotProduct >= 0，卫星在日侧，完全日照
-    if (dotProduct >= 0.0) {
-        return ShadowStatus::FullSunlight;
-    }
+    // cos(theta): theta = 地心-卫星矢量与反太阳方向的夹角（夜侧为 0°）
+    // theta = 90° ↔ 卫星在地平圆上与太阳连线垂直
+    const double cosTheta = clampUnit(-dotProduct / r);
+    if (cosTheta <= 0.0) return ShadowStatus::FullSunlight;   // 日侧
 
-    // 卫星在夜侧：计算卫星到日地轴线的垂距
-    double satDist2 = satECEF[0] * satECEF[0]
-                    + satECEF[1] * satECEF[1]
-                    + satECEF[2] * satECEF[2];
-    double dPerp2 = satDist2 - dotProduct * dotProduct;
+    // ---- 视半径 ----
+    const double dsun = (sunDistAU > 0.0 ? sunDistAU : 1.0) * AU_KM;
+    // 近地卫星 ρe 明显大于 ρs；对 GEO 亦成立（ρe≈8.7° ≫ ρs≈0.27°）
+    const double rhoEarth = std::asin(clampUnit(EARTH_RADIUS_KM / r));
+    const double rhoSun   = std::asin(clampUnit(SUN_RADIUS_KM / dsun));
 
-    if (dPerp2 < 0.0) dPerp2 = 0.0;
-    double dPerp = std::sqrt(dPerp2);
-
-    if (dPerp < EARTH_RADIUS_KM) {
+    // ---- 圆锥判定 ----
+    const double theta = std::acos(cosTheta);
+    if (theta < rhoEarth - rhoSun)
         return ShadowStatus::InUmbra;
-    }
+    if (theta < rhoEarth + rhoSun)
+        return ShadowStatus::InPenumbra;
     return ShadowStatus::FullSunlight;
 }
