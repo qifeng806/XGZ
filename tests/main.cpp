@@ -41,6 +41,7 @@ int main(int argc, char *argv[])
         { "tleparser",      runTstTleParser },
         { "coordtransform", runTstCoordTransform },
         { "sunposition",    runTstSunPosition },
+        { "nutation",       runTstNutation },
         { "earthshadow",    runTstEarthShadow },
         { "propagator",     runTstPropagator },
         { "orbitcalc",      runTstOrbitCalc },

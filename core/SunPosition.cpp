@@ -3,6 +3,7 @@
 // =============================================================================
 #include "SunPosition.h"
 #include "CoordTransform.h"
+#include "Nutation.h"
 #include <cmath>
 
 #ifndef M_PI
@@ -56,18 +57,18 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
                      + 0.000289 * std::sin(3.0 * M));
 
     // ---- Step 5: 太阳视黄经 λ ----
-    // 加上光行差与黄经章动主项修正 (Meeus 25.9):
-    //   Δλ = −0.00569° − 0.00478°·sin(Ω)，Ω = 125.04° − 1934.136°·T(儒略世纪)
-    // 使 RA/Dec 从几何位置提升到视位置（精度 ≈ 0.01° 量级）
+    // 几何黄经 λ_geo = L0 + C（平均轨道项）
     double lambda = wrap2Pi(L0 + C);
-    double omega  = deg2rad(125.04 - 1934.136 * (T * 10.0));
-    lambda = wrap2Pi(lambda + deg2rad(-0.00569 - 0.00478 * std::sin(omega)));
 
-    // ---- Step 6: 黄赤交角 ε ----
-    double eps = deg2rad(23.43929111
-                         - 0.01300416667 * (T * 10.0)
-                         - 1.6389e-7 * (T * 10.0) * (T * 10.0)
-                         + 5.0361e-7 * (T * 10.0) * (T * 10.0) * (T * 10.0));
+    // 光行差 −20.4898″/R（Meeus 25.9，R 为日地距离 AU，见 Step 8）
+    // 章动 Δψ（Meeus 表 22.A 完整 63 项级数，精度 0.5″）
+    const double distAU = 1.00014 - 0.01671 * std::cos(M)
+                        - 0.00014 * std::cos(2.0 * M);
+    const double dPsi = Nutation::compute(jdTT).dPsi;
+    lambda = wrap2Pi(lambda + dPsi - deg2rad(20.4898 / 3600.0 / distAU));
+
+    // ---- Step 6: 真黄赤交角 ε = ε0 + Δε ----
+    double eps = deg2rad(Nutation::trueObliquityDeg(jdTT));
 
     // ---- Step 7: 黄道 → 赤道 (RA, Dec) ----
     double sinLambda = std::sin(lambda);
@@ -88,7 +89,7 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
     sp.decDeg = rad2deg(dec);
 
     // ---- Step 8: 日地距离（AU） ----
-    sp.distanceAU = 1.00014 - 0.01671 * std::cos(M) - 0.00014 * std::cos(2.0 * M);
+    sp.distanceAU = distAU;
 
     // ---- Step 9: 太阳地心方向单位矢量（ECI J2000） ----
     sp.dirECI = {

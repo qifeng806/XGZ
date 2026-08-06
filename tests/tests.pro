@@ -17,6 +17,7 @@ SOURCES += \
     tst_tleparser.cpp \
     tst_coordtransform.cpp \
     tst_sunposition.cpp \
+    tst_nutation.cpp \
     tst_earthshadow.cpp \
     tst_propagator.cpp \
     tst_orbitcalc.cpp \
@@ -25,6 +26,7 @@ SOURCES += \
     ../core/CoordTransform.cpp \
     ../core/Observer.cpp \
     ../core/SunPosition.cpp \
+    ../core/Nutation.cpp \
     ../core/EarthShadow.cpp \
     ../core/DopplerCalc.cpp \
     ../core/OrbitCalculator.cpp \
