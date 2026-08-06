@@ -18,6 +18,12 @@ namespace {
     constexpr double MU_KM3_S2   = 398600.8;   // 地球引力常数 km³/s²
     constexpr double EXTEND_MIN   = 60.0;      // 跨窗口过境延长搜索（分钟）
     constexpr double TCA_REFINE_SEC = 3.0;     // TCA 三分搜索初始半宽（秒）
+    constexpr double SEC_PER_DAY  = 86400.0;
+
+    // UTC 儒略日 → UT1 儒略日（GMST/地固坐标旋转需要 UT1 时标）
+    inline double ut1JD(double jdUtc) {
+        return jdUtc + CoordTransform::deltaTSeconds(jdUtc) / SEC_PER_DAY;
+    }
 }
 
 // ========== 辅助：填充一次过境的完整详情 ==========
@@ -40,27 +46,30 @@ static void fillPassDetails(PassEvent &ev,
             auto eciT = propagate(jdTCA);
             auto eciL = propagate(jdLOS);
             if (eciA) {
-                auto eA = CoordTransform::eciToEcef(eciA->posKm, jdAOS);
+                auto eA = CoordTransform::eciToEcef(eciA->posKm, ut1JD(jdAOS));
                 // 太阳方向必须旋转到 ECEF 与卫星位置同系
-                auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
+                auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, ut1JD(jdAOS));
                 ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
+                ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA.distanceAU);
             }
             if (eciT) {
-                auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
-                auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
+                auto eT = CoordTransform::eciToEcef(eciT->posKm, ut1JD(jdTCA));
+                auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, ut1JD(jdTCA));
                 ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
+                ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT.distanceAU);
             }
             if (eciL) {
-                auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
-                auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
+                auto eL = CoordTransform::eciToEcef(eciL->posKm, ut1JD(jdLOS));
+                auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, ut1JD(jdLOS));
                 ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
+                ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL.distanceAU);
             }
         }
 
         double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
-        bool satLit = (ev.aosSatShadow == ShadowStatus::FullSunlight ||
-                       ev.tcaSatShadow == ShadowStatus::FullSunlight ||
-                       ev.losSatShadow == ShadowStatus::FullSunlight);
+        // 光照充足: 三个关键时刻中任一处太阳圆面可见比例 > 50%
+        double bestIllum = std::max({ev.aosIllum, ev.tcaIllum, ev.losIllum});
+        bool satLit = bestIllum > 0.5;
         if (bestSunAlt < cfg.darkSkyThresholdDeg && satLit)
             ev.visibility = PassVisibility::Visible;
         else if (bestSunAlt < cfg.darkSkyThresholdDeg)
@@ -106,7 +115,7 @@ double OrbitCalculator::elevationAt(PropagateFn &propagate,
     auto eciOpt = propagate(jd);
     if (!eciOpt) return -1000.0;  // 传播失败 → 视为不可见
 
-    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
+    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
     return obs.lookAngle(ecef).elevDeg;
 }
 
@@ -121,7 +130,7 @@ void OrbitCalculator::computeMoment(PropagateFn &propagate,
         geo  = GeoPos(0.0, 0.0, 0.0);
         return;
     }
-    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
+    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
     look = obs.lookAngle(ecef);
     geo  = obs.subSatPoint(ecef);
 }
@@ -351,6 +360,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().losSunAlt = passes[i].losSunAlt;
                     merged.back().losSatShadow = passes[i].losSatShadow;
                     merged.back().losElRefracted = passes[i].losElRefracted;
+                    merged.back().losIllum = passes[i].losIllum;
                     merged.back().durationSec = (intMsToJd(merged.back().losJdMs) - intMsToJd(merged.back().aosJdMs)) * 86400.0;
                     // 弧段采样: 追加后半段的点（保持时间单调，跳过重叠区）
                     auto &dst = merged.back().samples;
@@ -365,6 +375,9 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().tcaJdMs = passes[i].tcaJdMs;
                     merged.back().tcaLook = passes[i].tcaLook;
                     merged.back().tcaSatGeo = passes[i].tcaSatGeo;
+                    merged.back().tcaSunAlt = passes[i].tcaSunAlt;
+                    merged.back().tcaSatShadow = passes[i].tcaSatShadow;
+                    merged.back().tcaIllum = passes[i].tcaIllum;
                 }
             } else {
                 merged.push_back(std::move(passes[i]));

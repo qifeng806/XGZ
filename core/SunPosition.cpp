@@ -2,6 +2,7 @@
 // SunPosition.cpp — Meeus "Astronomical Algorithms" 第25章低精度太阳星历
 // =============================================================================
 #include "SunPosition.h"
+#include "CoordTransform.h"
 #include <cmath>
 
 #ifndef M_PI
@@ -13,6 +14,7 @@ namespace {
     constexpr double TWOPI  = 2.0 * PI;
     constexpr double DEG2RAD = PI / 180.0;
     constexpr double RAD2DEG = 180.0 / PI;
+    constexpr double SEC_PER_DAY = 86400.0;
 
     inline double deg2rad(double d) { return d * DEG2RAD; }
     inline double rad2deg(double r) { return r * RAD2DEG; }
@@ -23,31 +25,20 @@ namespace {
         if (ang < 0.0) ang += TWOPI;
         return ang;
     }
-
-    // GMST（IAU-1982 简化版，弧度）
-    double gmst(double jd) {
-        double jd0 = std::floor(jd - 0.5) + 0.5;
-        double T   = (jd0 - 2451545.0) / 36525.0;
-        double gmstSec = 24110.54841
-                       + 8640184.812866 * T
-                       + 0.093104 * T * T - 6.2e-6 * T * T * T;
-        double fracDay = (jd - jd0);
-        gmstSec += 86400.0 * fracDay * 1.00273790935;
-        gmstSec = std::fmod(gmstSec, 86400.0);
-        if (gmstSec < 0.0) gmstSec += 86400.0;
-        return gmstSec * TWOPI / 86400.0;
-    }
 }
 
-SunPosition SunPositionCalc::compute(const double jd,
+SunPosition SunPositionCalc::compute(const double jdUtc,
                                      double obsLatDeg, double obsLonDeg)
 {
+    // UTC → TT（历表使用）：ΔT 秒级修正，远小于公式自身精度
+    const double jdTT = jdUtc + CoordTransform::deltaTSeconds(jdUtc) / SEC_PER_DAY;
+
     const double obsLat = deg2rad(obsLatDeg);
     const double obsLon = deg2rad(obsLonDeg);
     SunPosition sp;
 
-    // ---- Step 1: 儒略千年数（J2000.0 起算） ----
-    double T = (jd - 2451545.0) / 365250.0;
+    // ---- Step 1: 儒略千年数（J2000.0 起算, TT 时标） ----
+    double T = (jdTT - 2451545.0) / 365250.0;
 
     // ---- Step 2: 太阳平黄经（度 → rad） ----
     double L0 = deg2rad(280.46646 + 36000.76983 * (T * 10.0)
@@ -107,7 +98,8 @@ SunPosition SunPositionCalc::compute(const double jd,
     };
 
     // ---- Step 10: 赤道 → 地平（观测站） ----
-    double gmstRad = gmst(jd);
+    // 时角使用 UT1 修正后的 GMST（输入为 UTC，内部加 ΔT）
+    double gmstRad = CoordTransform::gmstRadUtc(jdUtc);
     double lha = gmstRad + obsLon - ra;  // 地方时角
     lha = wrap2Pi(lha);
 

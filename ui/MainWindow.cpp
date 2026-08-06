@@ -587,8 +587,17 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         m_passTable->setItem(r, 7, visItem);
 
         setCell(8,  QString::number(p.tcaSunAlt, 'f', 1) + "°");
-        setCell(9,  (p.tcaSatShadow == ShadowStatus::FullSunlight) ? "是" :
-                     (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "否");
+
+        // 卫星光照: 阴影状态 + TCA 时刻太阳圆面可见比例（半影带内 1~99%）
+        QString litText;
+        switch (p.tcaSatShadow) {
+        case ShadowStatus::FullSunlight: litText = "日照"; break;
+        case ShadowStatus::InPenumbra:
+            litText = QString("半影 %1%").arg(qBound(1, static_cast<int>(p.tcaIllum * 100.0), 99));
+            break;
+        case ShadowStatus::InUmbra:      litText = "本影"; break;
+        }
+        setCell(9, litText);
 
         setCell(10, QString("%1°, %2°, %3km")
             .arg(p.aosSatGeo.latDeg, 0, 'f', 1)
@@ -641,7 +650,7 @@ void MainWindow::onExportCSV()
     // 表头
     out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),方位角(°),"
            "可见性,太阳高度(°),卫星光照,入境纬度(°),入境经度(°),入境高度(km),"
-           "斜距(km),多普勒(kHz),质量\n";
+           "斜距(km),多普勒(kHz),质量,AOS光照,TCA光照,LOS光照\n";
 
     for (int i = 0; i < m_filteredPasses.size(); ++i) {
         const auto &p = m_filteredPasses[i];
@@ -654,6 +663,11 @@ void MainWindow::onExportCSV()
         QString visStr = "白天";
         if (p.visibility == PassVisibility::Visible) visStr = "可见";
         else if (p.visibility == PassVisibility::RadioOnly) visStr = "无线电";
+        auto illumStr = [](double f) -> QString {
+            if (f <= 0.0)      return "0%";
+            if (f >= 1.0)      return "100%";
+            return QString("%1%").arg(static_cast<int>(f * 100.0));
+        };
         out << (i + 1) << ","
             << QString::fromStdString(p.satelliteName) << ","
             << jdToStr(p.aosJdMs) << ","
@@ -671,7 +685,10 @@ void MainWindow::onExportCSV()
             << p.tcaLook.rangeKm << ","
             << p.dopplerAtTcaKHz << ","
             << ((p.quality == PassQuality::Excellent) ? "优秀" :
-                (p.quality == PassQuality::Good) ? "良好" : "一般") << "\n";
+                (p.quality == PassQuality::Good) ? "良好" : "一般") << ","
+            << illumStr(p.aosIllum) << ","
+            << illumStr(p.tcaIllum) << ","
+            << illumStr(p.losIllum) << "\n";
     }
 }
 
@@ -747,6 +764,9 @@ void MainWindow::onExportJSON()
         obj["dopplerKHz"]  = p.dopplerAtTcaKHz;
         obj["aosSunAlt"]   = p.aosSunAlt;
         obj["aosSatLit"]   = static_cast<int>(p.aosSatShadow);
+        obj["aosIllum"]    = p.aosIllum;
+        obj["tcaIllum"]    = p.tcaIllum;
+        obj["losIllum"]    = p.losIllum;
         obj["aosLat"]      = p.aosSatGeo.latDeg;
         obj["aosLon"]      = p.aosSatGeo.lonDeg;
         obj["aosAltKm"]    = p.aosSatGeo.altKm;

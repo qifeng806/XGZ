@@ -72,12 +72,13 @@ void TstSunPosition::beijingNoonAltitudes()
     // 北京正午（真太阳时, UT ≈ 12h − 116.4°/15° = 04:14，但受时差方程影响,
     // 中天时刻会偏移 ±16 min）。故先迭代求中天（lha = GMST + lon − RA = 0），
     // 再验证: 中天方位角应精确为正南 180°，高度符合 90° − |φ − δ|。
+    // 注意: 时角与 SunPosition 内部一致，均使用 ΔT 修正后的 UT1 GMST
     static const double GMST_RATE = 360.985647366;   // °/UT 日
     auto check = [](int y, int mo, int d, double expectAlt, const char *tag) {
         double jd = jdFromUtc(y, mo, d, 4, 14, 0);
         for (int i = 0; i < 10; ++i) {
             SunPosition s = SunPositionCalc::compute(jd, BEIJING_LAT, BEIJING_LON);
-            double lha = CoordTransform::gmstRad(jd) * 180.0 / M_PI + BEIJING_LON - s.raDeg;
+            double lha = CoordTransform::gmstRadUtc(jd) * 180.0 / M_PI + BEIJING_LON - s.raDeg;
             while (lha > 180.0) lha -= 360.0;
             while (lha < -180.0) lha += 360.0;
             jd -= lha / GMST_RATE;

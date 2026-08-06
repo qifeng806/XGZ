@@ -2,6 +2,7 @@
 // PolarPlotWidget.cpp — 极坐标图实现
 // =============================================================================
 #include "PolarPlotWidget.h"
+#include "CatmullRom.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -140,13 +141,21 @@ void PolarPlotWidget::paintEvent(QPaintEvent *)
             QPointF losP = polarToScreen(p.losLook.azDeg, p.losLook.elevDeg, cx, cy, radius);
 
             if (p.samples.size() >= 2) {
-                // 真实弧段: 逐点折线（OrbitCalculator 采样）
-                path.moveTo(polarToScreen(p.samples[0].look.azDeg,
-                                          p.samples[0].look.elevDeg, cx, cy, radius));
-                for (size_t k = 1; k < p.samples.size(); ++k) {
-                    path.lineTo(polarToScreen(p.samples[k].look.azDeg,
-                                              p.samples[k].look.elevDeg, cx, cy, radius));
+                // 真实弧段: Catmull-Rom 平滑曲线（经过所有采样点）
+                // 方位角跨 0°/360° 处断开分段平滑，避免整圈环绕伪影
+                QVector<QPointF> seg;
+                for (size_t k = 0; k < p.samples.size(); ++k) {
+                    const auto &s = p.samples[k];
+                    if (!seg.isEmpty()) {
+                        double daz = std::abs(s.look.azDeg - p.samples[k - 1].look.azDeg);
+                        if (daz > 180.0) {    // 跨 0°/360°: 断开
+                            path.addPath(CatmullRom::path(seg));
+                            seg.clear();
+                        }
+                    }
+                    seg.append(polarToScreen(s.look.azDeg, s.look.elevDeg, cx, cy, radius));
                 }
+                path.addPath(CatmullRom::path(seg));
             } else {
                 // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
                 path.moveTo(aosP);

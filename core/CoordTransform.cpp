@@ -48,6 +48,62 @@ double CoordTransform::gmstRad(double jdUt1)
 }
 
 // ============================================================================
+// deltaTSeconds — ΔT = TT − UT1（秒）
+// Espenak & Meeus (2006) 分段多项式, 覆盖 1900~2100 年
+// 应用内历元范围之外时取边界值，保证连续
+// ============================================================================
+double CoordTransform::deltaTSeconds(double jdUtc)
+{
+    // 儒略日 → 年份（近似，足够 ΔT 使用）
+    double year = 2000.0 + (jdUtc - 2451545.0) / 365.2425;
+
+    if (year < 1900.0) {
+        double t = (1900.0 - 2000.0) / 100.0;
+        return -2.79 + 1.494119 * t - 0.0598939 * t * t
+             + 0.0061966 * t * t * t - 0.000197 * t * t * t * t;
+    }
+    if (year < 1920.0) {
+        double t = (year - 1900.0) / 100.0;
+        return -2.79 + 1.494119 * t - 0.0598939 * t * t
+             + 0.0061966 * t * t * t - 0.000197 * t * t * t * t;
+    }
+    if (year < 1941.0) {
+        double t = year - 1920.0;
+        return 21.20 + 0.84493 * t - 0.076100 * t * t
+             + 0.0020936 * t * t * t;
+    }
+    if (year < 1961.0) {
+        double t = year - 1950.0;
+        return 29.07 + 0.407 * t - t * t / 233.0 + t * t * t / 2547.0;
+    }
+    if (year < 1986.0) {
+        double t = year - 1975.0;
+        return 45.45 + 1.067 * t - t * t / 260.0 - t * t * t / 718.0;
+    }
+    if (year < 2005.0) {
+        double t = year - 2000.0;
+        return 63.86 + 0.3345 * t - 0.060374 * t * t
+             + 0.0017275 * t * t * t + 0.000651814 * t * t * t * t
+             + 0.00002373599 * t * t * t * t * t;
+    }
+    if (year < 2050.0) {
+        double t = year - 2000.0;
+        return 62.92 + 0.32217 * t + 0.005589 * t * t;
+    }
+    // ≥ 2050（含 extrapolate 2100 后）
+    double t = (year - 1820.0) / 100.0;
+    return -20.0 + 32.0 * t * t - 0.5628 * (2150.0 - year);
+}
+
+// ============================================================================
+// gmstRadUtc — GMST（输入 UTC 儒略日，内部自动加 ΔT 修正为 UT1）
+// ============================================================================
+double CoordTransform::gmstRadUtc(double jdUtc)
+{
+    return gmstRad(jdUtc + deltaTSeconds(jdUtc) / SEC_PER_DAY);
+}
+
+// ============================================================================
 // eciToEcef — TEME → ECEF（绕 Z 轴旋转 GMST 角）
 // ============================================================================
 std::array<double, 3> CoordTransform::eciToEcef(

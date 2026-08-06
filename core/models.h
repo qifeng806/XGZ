@@ -133,7 +133,7 @@ struct PassSample {
 };
 
 // ---------------------------------------------------------------------------
-// 一次完整过境事件（共 22 个字段 + 弧段采样）
+// 一次完整过境事件（共 22 个字段 + 光照比例 + 弧段采样）
 // 时刻统一用 int64_t 毫秒儒略日，参考点为 JD 原点（JD×86400000 取整），
 // 与 Unix epoch 毫秒（1970-01-01）不同，转换公式：
 //   epoch_ms = jdMs − 210866760000000LL   （即减去 2440587.5 × 86400000）
@@ -172,6 +172,11 @@ struct PassEvent {
     PassQuality  quality         = PassQuality::Poor;
     PassVisibility visibility   = PassVisibility::Daylight;
     double       dopplerAtTcaKHz = 0.0;  // TCA 时刻多普勒频移（kHz）
+
+    // ── 太阳光照比例（本影=0，全日照=1，半影带内线性过渡）──
+    double aosIllum = 1.0;   // AOS 时刻卫星被太阳照亮的圆面比例
+    double tcaIllum = 1.0;
+    double losIllum = 1.0;
 
     // 过境弧段采样（AOS→LOS 等步长采样，供极坐标/地面轨迹绘图与 KML 导出）
     std::vector<PassSample> samples;

@@ -1,37 +1,8 @@
-# ===== Build outputs =====
-release/
-debug/
-build/
-*.o
-*.obj
-*.exe
-*.dll
-*.pdb
-*.ilk
-
-# ===== qmake artifacts =====
-Makefile
-Makefile.Debug
-Makefile.Release
-.qmake.stash
-.qmake.cache
-object_script.*
-
-# ===== Test build outputs =====
-tests/release/
+# 测试运行输出（每次运行重新生成）
+tests/run_*.txt
+tests/release/*.o
+tests/release/*.d
+tests/release/tst_xgz.exe
 tests/debug/
-tests/Makefile
-tests/Makefile.Debug
-tests/Makefile.Release
-tests/.qmake.stash
-
-# ===== Qt Creator / IDE =====
-.qtcreator/
-*.user
-*.autosave
-.vscode/
-.idea/
-
-# ===== Generated data (runtime only; golden reference files stay committed) =====
-generated-*.out
-*.log
+release/*.o
+release/XGZ.exe

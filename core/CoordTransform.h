@@ -22,6 +22,14 @@ public:
     // 返回: GMST 弧度，范围 [0, 2π)
     static double gmstRad(double jdUt1);
 
+    // ---- ΔT = TT − UT1（秒）----
+    // Espenak & Meeus (2006) 分段多项式, 覆盖 1900~2100
+    // 用于把 UTC 儒略日修正为 UT1: jdUt1 = jdUtc + ΔT/86400
+    static double deltaTSeconds(double jdUtc);
+
+    // ---- GMST（UTC 输入，内部自动加 ΔT 修正）----
+    static double gmstRadUtc(double jdUtc);
+
     // ---- TEME(ECI) → ECEF ----
     // 绕 Z 轴旋转 +GMST 角（将惯性系旋转到与地球同步）
     // 输入: posTeme — TEME 系位置 km; jdUt1 — 儒略日

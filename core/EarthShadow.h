@@ -32,6 +32,13 @@ public:
     static ShadowStatus checkShadow(const std::array<double, 3> &satECEF,
                                     const std::array<double, 3> &sunDirECEF,
                                     double sunDistAU = 1.0);
+
+    // 太阳圆面可见比例 [0, 1]：1=全日照，0=本影，
+    // 半影带内随夹角 theta 从本影界到半影界线性过渡
+    // 参数含义与 checkShadow 相同；用于光照强度/星上电源等细化场景
+    static double umbraFactor(const std::array<double, 3> &satECEF,
+                              const std::array<double, 3> &sunDirECEF,
+                              double sunDistAU = 1.0);
 };
 
 #endif // CORE_EARTHSHADOW_H

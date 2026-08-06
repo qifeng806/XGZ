@@ -45,7 +45,9 @@ double elevationAt(const OrbitCalculator::PropagateFn &fn,
 {
     auto st = fn(jd);
     if (!st) return -1000.0;
-    return obs.lookAngle(CoordTransform::eciToEcef(st->posKm, jd)).elevDeg;
+    // 与引擎一致: 坐标旋转使用 ΔT 修正后的 UT1
+    const double jdUt1 = jd + CoordTransform::deltaTSeconds(jd) / 86400.0;
+    return obs.lookAngle(CoordTransform::eciToEcef(st->posKm, jdUt1)).elevDeg;
 }
 
 // 断言浮点有限
@@ -153,8 +155,9 @@ void TstOrbitCalc::tcaIsTrueMaximum()
         for (double jd = jdA; jd <= jdL; jd += 5.0 / 86400.0)
             best = std::max(best, elevationAt(fn, obs, jd));
         QVERIFY2(std::abs(best - ev.maxElevDeg) < 0.05,
-                 qPrintable(QString("TCA=%.3f 扫描=%.3f")
-                            .arg(ev.maxElevDeg, 0, 'f', 3).arg(best, 0, 'f', 3)));
+                 qPrintable(QString("TCA=%1 scan=%2")
+                            .arg(ev.maxElevDeg, 0, 'f', 3)
+                            .arg(best, 0, 'f', 3)));
         // TCA 处仰角即最大仰角
         QVERIFY(std::abs(ev.tcaLook.elevDeg - ev.maxElevDeg) < 1e-6);
         // 质量分级一致性
@@ -307,7 +310,7 @@ void TstOrbitCalc::samplesCoverPass()
     // 采样步长 ≈ 15 s（截断误差 ≤ 1 ms）
     const double stepSec = (ev.samples[1].jdMs - ev.samples[0].jdMs) / 1000.0;
     QVERIFY2(std::abs(stepSec - 15.0) < 0.5,
-             qPrintable(QString("采样步长=%.3f s").arg(stepSec)));
+             qPrintable(QString("step=%1 s").arg(stepSec, 0, 'f', 3)));
 
     // 采样点仰角 ≥ 掩蔽角（允许二分残余误差）
     for (const auto &s : ev.samples) {

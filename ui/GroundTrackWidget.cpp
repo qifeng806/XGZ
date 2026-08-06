@@ -2,8 +2,10 @@
 // GroundTrackWidget.cpp — 地面轨迹图实现
 // =============================================================================
 #include "GroundTrackWidget.h"
+#include "CatmullRom.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <cmath>
 
 GroundTrackWidget::GroundTrackWidget(QWidget *parent)
     : QWidget(parent)
@@ -120,13 +122,24 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         QPointF losP = geoToScreen(p.losSatGeo.latDeg, p.losSatGeo.lonDeg, x0, y0, sx, sy);
 
         if (p.samples.size() >= 2) {
-            // 真实地面轨迹: 逐点折线（OrbitCalculator 采样）
-            trackPath.moveTo(geoToScreen(p.samples[0].geo.latDeg, p.samples[0].geo.lonDeg,
-                                         x0, y0, sx, sy));
-            for (size_t k = 1; k < p.samples.size(); ++k) {
-                trackPath.lineTo(geoToScreen(p.samples[k].geo.latDeg, p.samples[k].geo.lonDeg,
-                                             x0, y0, sx, sy));
+            // 真实地面轨迹: Catmull-Rom 平滑曲线（经过所有采样点）
+            // 跨越 ±180° 经线处断开分段平滑，避免整幅横穿伪影
+            auto screenPt = [&](const PassSample &s) {
+                return geoToScreen(s.geo.latDeg, s.geo.lonDeg, x0, y0, sx, sy);
+            };
+            QVector<QPointF> seg;
+            for (size_t k = 0; k < p.samples.size(); ++k) {
+                if (!seg.isEmpty()) {
+                    double dlon = std::abs(p.samples[k].geo.lonDeg
+                                           - p.samples[k - 1].geo.lonDeg);
+                    if (dlon > 180.0) {       // 跨经线: 断开
+                        trackPath.addPath(CatmullRom::path(seg));
+                        seg.clear();
+                    }
+                }
+                seg.append(screenPt(p.samples[k]));
             }
+            trackPath.addPath(CatmullRom::path(seg));
         } else {
             // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
             trackPath.moveTo(aosP);

@@ -38,6 +38,7 @@ private slots:
     void coneBoundaries();
     void sunDistanceEffect();
     void farFromAxis();
+    void umbraFactorLinearity();
     void frameRotationMatters();
 };
 
@@ -146,6 +147,39 @@ void TstEarthShadow::farFromAxis()
     std::array<double, 3> sat = {8000.0, -6778.137, 0.0};
     QCOMPARE(EarthShadow::checkShadow(sat, {0.0, 1.0, 0.0}),
              ShadowStatus::FullSunlight);
+}
+
+void TstEarthShadow::umbraFactorLinearity()
+{
+    // 半影带内: 因子从本影界(0) 到半影界(1) 线性过渡
+    const double r = 8000.0;
+    const double uLow  = rhoEarth(r) - rhoSun(1.0);
+    const double uHigh = rhoEarth(r) + rhoSun(1.0);
+    const double deg = 180.0 / M_PI;
+    const std::array<double, 3> SUN_DIR = {0.0, 1.0, 0.0};
+
+    // 日侧 / 本影内部 / 全日照外侧 → 端点值
+    QCOMPARE(EarthShadow::umbraFactor({0.0, 6778.137, 0.0}, SUN_DIR), 1.0);
+    QCOMPARE(EarthShadow::umbraFactor(nightSat(r, 0.0), SUN_DIR), 0.0);
+    QCOMPARE(EarthShadow::umbraFactor(nightSat(r, (uHigh + 1.0) * deg), SUN_DIR), 1.0);
+    QCOMPARE(EarthShadow::umbraFactor(nightSat(r, 0.5 * (uLow + uHigh) * deg), SUN_DIR), 0.5);
+
+    // 与 checkShadow 严格一致: 端点附近落在对应的三态区间
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uLow - 1e-9) * deg), SUN_DIR),
+             ShadowStatus::InUmbra);
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uHigh + 1e-9) * deg), SUN_DIR),
+             ShadowStatus::FullSunlight);
+    QCOMPARE(EarthShadow::checkShadow(nightSat(r, 0.5 * (uLow + uHigh) * deg), SUN_DIR),
+             ShadowStatus::InPenumbra);
+
+    // 对称性: θ 与 θ' = (uLow+uHigh) − θ 处因子互补（半影带内）
+    for (int k = 1; k <= 4; ++k) {
+        double theta = uLow + (uHigh - uLow) * k / 5.0;
+        double f1 = EarthShadow::umbraFactor(nightSat(r, theta * deg), SUN_DIR);
+        double f2 = EarthShadow::umbraFactor(
+            nightSat(r, (uLow + uHigh - theta) * deg), SUN_DIR);
+        QVERIFY(std::abs((f1 + f2) - 1.0) < 1e-9);
+    }
 }
 
 void TstEarthShadow::frameRotationMatters()

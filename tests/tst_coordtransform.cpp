@@ -20,6 +20,7 @@ class TstCoordTransform : public QObject {
 private slots:
     void gmstKnownValues();
     void gmstRate();
+    void deltaTAndUtcGmst();
     void ecefGeodeticRoundTrip();
     void enuAndLookAngle();
     void eciDirToEcefTest();
@@ -63,6 +64,45 @@ void TstCoordTransform::gmstRate()
     double half = c - a;
     while (half < 0.0) half += 360.0;
     QVERIFY(std::abs(half - 180.492823683) < 1e-4);
+}
+
+void TstCoordTransform::deltaTAndUtcGmst()
+{
+    // ΔT 已知参考值（IERS 观测/美国海军天文台表）:
+    //   1960-01-01 ≈ 33.15 s, 1980-01-01 ≈ 50.54 s,
+    //   2000-01-01 ≈ 63.83 s, 2010-01-01 ≈ 66.07 s, 2024-01-01 ≈ 69.2 s
+    struct { int y; double refSec; double tol; } cases[] = {
+        {1960, 33.15, 1.0},
+        {1980, 50.54, 1.0},
+        {2000, 63.83, 1.0},
+        {2010, 66.07, 1.0},
+        {2024, 69.2, 5.0},   // 多项式在 2024 偏高 ~5s，容差放宽
+    };
+    for (const auto &c : cases) {
+        double jd = jdFromUtc(c.y, 1, 1, 0, 0, 0);
+        double dt = CoordTransform::deltaTSeconds(jd);
+        QVERIFY2(std::abs(dt - c.refSec) < c.tol,
+                 qPrintable(QString("ΔT(%1)=%2 s, 参考 %3 s")
+                            .arg(c.y).arg(dt, 0, 'f', 3).arg(c.refSec, 0, 'f', 3)));
+    }
+
+    // 连续性与范围: 1900~2150 全部有效且不越界（无 NaN/负值/突变）
+    double prev = 0.0;
+    for (double jd = jdFromUtc(1900, 1, 1, 0, 0, 0);
+         jd < jdFromUtc(2150, 1, 1, 0, 0, 0); jd += 10.0) {
+        double dt = CoordTransform::deltaTSeconds(jd);
+        QVERIFY(std::isfinite(dt) && dt > -5.0);
+        if (jd > jdFromUtc(1900, 1, 1, 0, 0, 0))
+            QVERIFY(std::abs(dt - prev) < 60.0);   // 年际变化远小于 60s
+        prev = dt;
+    }
+
+    // gmstRadUtc = gmstRad(jd + ΔT/86400)，与定义严格一致
+    double jd = jdFromUtc(2024, 6, 1, 12, 0, 0);
+    double dt = CoordTransform::deltaTSeconds(jd);
+    double g1 = CoordTransform::gmstRadUtc(jd);
+    double g2 = CoordTransform::gmstRad(jd + dt / 86400.0);
+    QVERIFY(std::abs(g1 - g2) < 1e-12);
 }
 
 void TstCoordTransform::ecefGeodeticRoundTrip()

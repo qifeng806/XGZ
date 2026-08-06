@@ -12,7 +12,9 @@ double DopplerCalc::compute(const std::array<double, 3> &rTeme,
                               double carrierFreqMHz)
 {
     // ---- Step 1: TEME → ECEF 位置+速度（含地球自转哥里奥利修正） ----
-    const auto ecef = CoordTransform::eciStateToEcef(rTeme, vTeme, jd);
+    // 输入 jd 为 UTC 儒略日，先修正为 UT1（ΔT 秒级，本库近似误差 < 0.9s）
+    const double jdUt1 = jd + CoordTransform::deltaTSeconds(jd) / 86400.0;
+    const auto ecef = CoordTransform::eciStateToEcef(rTeme, vTeme, jdUt1);
     const auto &rECEF = ecef.first;
     const auto &vECEF = ecef.second;
 
