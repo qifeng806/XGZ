@@ -481,7 +481,9 @@ void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
     job.startUtc       = m_startTimeEdit->dateTime();
 
     // 配置 OrbitCalculator 参数
-    job.calcCfg.coarseStepSec      = 60.0;
+    // 粗搜步长 15s: 高掩蔽角 + 低轨的短过境（窗口 1~2 分钟）也能可靠检出
+    //（60s 步长会概率性漏检；每颗卫星全窗口约 0.2s，批量并行可接受）
+    job.calcCfg.coarseStepSec      = 15.0;
     job.calcCfg.bisectionIters     = 18;
     job.calcCfg.enableSunAnalysis  = true;
     job.calcCfg.enableShadowCheck  = true;

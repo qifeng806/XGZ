@@ -117,10 +117,3 @@ std::optional<EciState> Propagator::propagate(double jd)
     result.velKms = sv.velocity;
     return result;
 }
-
-std::function<std::optional<EciState>(double jd)> Propagator::makePropagateFn()
-{
-    return [this](double jd) -> std::optional<EciState> {
-        return this->propagate(jd);
-    };
-}

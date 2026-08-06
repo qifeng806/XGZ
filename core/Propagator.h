@@ -6,7 +6,6 @@
 // 返回 EciState（TEME 系），失败时返回 nullopt
 // =============================================================================
 #include "models.h"
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,10 +34,6 @@ public:
     // 核心传播：双精度儒略日 → TEME 位置/速度
     // 成功返回 EciState，失败（衰减/异常）返回 nullopt
     std::optional<EciState> propagate(double jd);
-
-    // 生成可调用对象（供 OrbitCalculator 使用）
-    // 内部捕获 this 指针，线程安全需自行保证
-    std::function<std::optional<EciState>(double jd)> makePropagateFn();
 
     // 暴露历元儒略日
     double epochJD() const { return m_epochJD; }

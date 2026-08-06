@@ -17,7 +17,7 @@ public:
     using PropagateFn = std::function<std::optional<EciState>(double jd)>;
 
     struct Config {
-        double coarseStepSec      = 60.0;
+        double coarseStepSec      = 15.0;   // 过境检测粗搜步长: 15s 可检出 1~2 分钟短过境
         int    bisectionIters     = 18;
         double maxElevScanStepSec = 3.0;
         double minDurationSec     = 10.0;
