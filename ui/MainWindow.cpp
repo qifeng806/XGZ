@@ -264,7 +264,35 @@ void MainWindow::setupUI()
         "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
         "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
     });
-    m_passTable->horizontalHeader()->setStretchLastSection(true);
+    m_passTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    // "卫星名" 与 "可见弧段" 拉伸填充剩余空间, 其余列固定宽度, 避免最右列被拉空
+    m_passTable->horizontalHeader()->setSectionResizeMode(1,  QHeaderView::Stretch);
+    m_passTable->horizontalHeader()->setSectionResizeMode(10, QHeaderView::Stretch);
+    const int colWidths[16] = {
+        /* # */ 40, /* 卫星名 */ 120, /* 入境 */ 150, /* 出境 */ 150, /* 持续 */ 60,
+        /* 最大仰角 */ 75, /* 方位角 */ 60, /* 可见性 */ 50, /* 太阳高度 */ 70, /* 卫星光照 */ 55,
+        /* 可见弧段 */ 170, /* 入境位置 */ 165, /* 斜距 */ 85, /* 多普勒 */ 90, /* 星等 */ 55, /* 质量 */ 60
+    };
+    for (int c = 0; c < 16; ++c)
+        m_passTable->setColumnWidth(c, colWidths[c]);
+    m_passTable->horizontalHeader()->setMinimumSectionSize(45);
+
+    // 表头提示（悬浮说明列语义）
+    const QStringList headerTips = {
+        QString(), QString(), QString(), QString(),
+        "过境持续时长", "几何仰角（悬浮显示大气折射后的视仰角）",
+        "TCA 时刻方位角", "光学可见 / 仅无线电 / 白天",
+        "TCA 时刻太阳高度角", "TCA 时刻卫星日照状态（半影带为太阳圆面可见比例）",
+        "几何过境内「暗天 + 被照亮」的连续可见时段",
+        "入境时刻卫星星下点经纬度与高度",
+        "TCA 时刻观测者至卫星斜距", "TCA 时刻多普勒频移",
+        "视星等估算（Vallerie 相位模型），越小越亮",
+        "综合质量评级"
+    };
+    for (int c = 0; c < 16; ++c) {
+        if (!headerTips[c].isEmpty() && m_passTable->horizontalHeaderItem(c))
+            m_passTable->horizontalHeaderItem(c)->setToolTip(headerTips[c]);
+    }
     m_passTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_passTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_passTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -715,6 +743,30 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         }
         setCell(15, qualityText);
 
+        // 列对齐: 数值右对齐、状态居中、文本左对齐
+        static const Qt::Alignment aligns[16] = {
+            Qt::AlignCenter,                   /* # */
+            Qt::AlignLeft  | Qt::AlignVCenter, /* 卫星名 */
+            Qt::AlignLeft  | Qt::AlignVCenter, /* 入境 */
+            Qt::AlignLeft  | Qt::AlignVCenter, /* 出境 */
+            Qt::AlignCenter,                   /* 持续 */
+            Qt::AlignRight | Qt::AlignVCenter, /* 最大仰角 */
+            Qt::AlignRight | Qt::AlignVCenter, /* 方位角 */
+            Qt::AlignCenter,                   /* 可见性 */
+            Qt::AlignRight | Qt::AlignVCenter, /* 太阳高度 */
+            Qt::AlignCenter,                   /* 卫星光照 */
+            Qt::AlignCenter,                   /* 可见弧段 */
+            Qt::AlignLeft  | Qt::AlignVCenter, /* 入境位置 */
+            Qt::AlignRight | Qt::AlignVCenter, /* 斜距 */
+            Qt::AlignRight | Qt::AlignVCenter, /* 多普勒 */
+            Qt::AlignRight | Qt::AlignVCenter, /* 星等 */
+            Qt::AlignCenter                    /* 质量 */
+        };
+        for (int c = 0; c < 16; ++c) {
+            if (auto *it = m_passTable->item(r, c))
+                it->setTextAlignment(aligns[c]);
+        }
+
         // 最大仰角颜色
         auto *elItem = m_passTable->item(r, 5);
         if (elItem) {
@@ -723,8 +775,6 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
             else                           elItem->setForeground(QColor(200, 80, 0));
         }
     }
-
-    m_passTable->resizeColumnsToContents();
 }
 
 // ============================================================================
