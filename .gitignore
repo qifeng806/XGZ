@@ -17,3 +17,5 @@ Makefile*
 tests/target_wrapper.bat
 *.pro.user
 *.user
+tests/tst_err.txt
+tests/tst_out.txt

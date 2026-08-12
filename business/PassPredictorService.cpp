@@ -3,6 +3,7 @@
 // =============================================================================
 #include "PassPredictorService.h"
 #include <QThread>
+#include <QTimer>
 #include <algorithm>
 
 PassPredictorService::PassPredictorService(QObject *parent)
@@ -14,6 +15,24 @@ PassPredictorService::~PassPredictorService()
     // 协作取消使任务通常毫秒级退出；超时(极端情况)后线程在后台自然后退，
     // 进程退出时由系统回收，绝不在主线程无限阻塞。
     cleanupAll(2000);
+
+    // 孤儿线程兜底: 析构子对象前必须回收或解除父子关系，
+    // 否则 QThread 仍在运行时析构会触发未定义行为
+    if (m_reapTimer) m_reapTimer->stop();
+    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 2000;
+    for (auto &aj : m_orphans) {
+        QThread *t = aj.thread;
+        if (!t) continue;
+        t->quit();
+        int remaining = static_cast<int>(deadline - QDateTime::currentMSecsSinceEpoch());
+        if (!t->wait(std::max(0, remaining))) {
+            t->setParent(nullptr);   // 仍未退出: 解除父子关系，随进程退出回收
+            aj.worker = nullptr;
+        } else {
+            t->deleteLater();
+        }
+    }
+    m_orphans.clear();
 }
 
 void PassPredictorService::startJob(const PassPredictWorker::Job &job)
@@ -177,12 +196,12 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
             ? aj.thread->wait(waitTimeoutMs)
             : aj.thread->wait();
         if (!exited) {
-            // 超时: 线程仍在运行（极端情况）。放弃等待，让线程在后台
-            // 自然后退。解除父子关系防止析构时 delete 正在运行的
-            // QThread（未定义行为）；不再 deleteLater，对象随进程退出回收。
-            aj.thread->setParent(nullptr);
-            aj.thread = nullptr;
-            aj.worker = nullptr;
+            // 超时: 线程仍在运行（极端情况）。不等了——
+            // 移入孤儿列表交给后台定时器二次回收（进程存活期间最终
+            // 全部回收成功），而不是永久泄漏或即使执行 delete 正在运行
+            // 的 QThread（未定义行为）。
+            m_orphans.append({aj.thread, aj.worker});
+            startReapTimer();
             return false;
         }
     } else {
@@ -219,4 +238,43 @@ void PassPredictorService::cleanupAll(int waitTimeoutMs)
         cleanupJob(aj, remaining);
     }
     m_activeJobs.clear();
+}
+
+void PassPredictorService::startReapTimer()
+{
+    if (m_reapTimer) return;   // 已在运行
+    m_reapTimer = new QTimer(this);
+    m_reapTimer->setInterval(1000);
+    connect(m_reapTimer, &QTimer::timeout, this, &PassPredictorService::reapOrphans);
+    m_reapTimer->start();
+}
+
+void PassPredictorService::reapOrphans()
+{
+    for (int i = m_orphans.size() - 1; i >= 0; --i) {
+        ActiveJob &aj = m_orphans[i];
+        QThread *t = aj.thread;
+        if (!t || !t->isRunning()) {
+            // 已自然退出（或已回收）: 补 deleteLater（finished→worker 删除
+            // 已由线程内连接完成），线程对象由主线程事件循环删除
+            if (t) t->deleteLater();
+            aj.thread = nullptr;
+            aj.worker = nullptr;
+            m_orphans.removeAt(i);
+            continue;
+        }
+        t->quit();
+        if (t->wait(500)) {          // 单片限时等待: 退出则回收
+            t->deleteLater();
+            aj.thread = nullptr;
+            aj.worker = nullptr;
+            m_orphans.removeAt(i);
+        }
+        // 仍未退出 → 保留待下一轮
+    }
+    if (m_orphans.isEmpty() && m_reapTimer) {
+        m_reapTimer->stop();         // 全部回收完毕 → 停表省电
+        m_reapTimer->deleteLater();
+        m_reapTimer = nullptr;
+    }
 }

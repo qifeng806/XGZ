@@ -483,10 +483,16 @@ void MainWindow::onBatchImport()
     BatchTleDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    const auto blocks = parseTleBlocks(dlg.text());
+    int incomplete = 0;
+    const auto blocks = parseTleBlocks(dlg.text(), &incomplete);
     if (blocks.isEmpty()) {
         QMessageBox::warning(this, "批量导入", "未识别到有效的 TLE 两行根数");
         return;
+    }
+    if (incomplete > 0) {
+        QMessageBox::warning(this, "批量导入",
+            QString("已解析 %1 颗卫星；另有 %2 条 TLE 不完整（缺少行1或行2），已跳过。")
+                .arg(blocks.size()).arg(incomplete));
     }
     startBatchFromBlocks(blocks, "批量导入");
 }
@@ -515,12 +521,18 @@ void MainWindow::onOnlineUpdate()
 // ============================================================================
 void MainWindow::onTleDownloaded(QString rawText, QString groupId)
 {
-    const auto blocks = parseTleBlocks(rawText);
+    int incomplete = 0;
+    const auto blocks = parseTleBlocks(rawText, &incomplete);
     if (blocks.isEmpty()) {
         QMessageBox::warning(this, "在线更新",
             QString("组 [%1] 未解析到有效 TLE（可能是空数据或格式变化）")
                 .arg(groupId));
         return;
+    }
+    if (incomplete > 0) {
+        QMessageBox::warning(this, "在线更新",
+            QString("组 [%1] 中有 %2 条 TLE 不完整，已跳过（其余 %3 颗正常）。")
+                .arg(groupId).arg(incomplete).arg(blocks.size()));
     }
     setStatusText(m_statusModel, QString("模型: 已下载 %1 颗卫星的 TLE").arg(blocks.size()));
 

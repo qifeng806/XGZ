@@ -20,6 +20,14 @@ namespace {
     constexpr double EXTEND_MIN   = 60.0;      // 跨窗口过境延长搜索（分钟）
     constexpr double TCA_REFINE_SEC = 3.0;     // TCA 三分搜索初始半宽（秒）
     constexpr double SEC_PER_DAY  = 86400.0;
+    // 观测站海拔的地平线倾角（度）: dip = acos(r/(r+h)) ≈ 1.0152·sqrt(h_km)。
+    // 高海拔站"视地平线"下倾，暗天判定的太阳高度阈值须按此值平移——
+    // 否则海拔 1km 山地站在太阳尚高于其视地平时就被误判为暗天
+    constexpr double DIP_COEF_DEG_PER_SQRT_KM = 1.0152;
+    inline double horizonDipDeg(double altKm)
+    {
+        return DIP_COEF_DEG_PER_SQRT_KM * std::sqrt(std::max(0.0, altKm));
+    }
     // 注: 地固系旋转（GMST）用 UT1 ≈ UTC（≤ 0.9s）的儒略日即可；
     // ΔT（TT−UT1）只用于太阳历表（SunPosition 内部自行转为 TT），切不可加到这里
 }
@@ -72,8 +80,10 @@ static void fillPassDetails(PassEvent &ev,
         // 光照判定以 TCA（用户实际观测时刻）为准 —— 与 Heavens-Above/Orbis
         // 的「峰值点燃亮」语义一致：仅 AOS/LOS 照亮、TCA 却在地影内的过境
         // 不标为可见（否则用户按 TCA 时刻观测看不到卫星）
+        // 暗天阈值按站点海拔的地平线倾角修正（见 horizonDipDeg）
         bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra) && ev.tcaIllum > 0.5;
-        if (bestSunAlt < cfg.darkSkyThresholdDeg && satLit)
+        const double dark = cfg.darkSkyThresholdDeg - horizonDipDeg(observer.altKm());
+        if (bestSunAlt < dark && satLit)
             ev.visibility = PassVisibility::Visible;
         else if (bestSunAlt < cfg.darkSkyThresholdDeg)
             ev.visibility = PassVisibility::RadioOnly;
@@ -206,7 +216,7 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     if (jdLOS <= jdAOS) return;
 
     const double step  = m_cfg.sampleStepSec / 86400.0;
-    const double dark  = m_cfg.darkSkyThresholdDeg;
+    const double dark  = m_cfg.darkSkyThresholdDeg - horizonDipDeg(obs.altKm());
 
     // t 时刻是否"可观测": 地面暗天 且 卫星被照亮（光照圆面 > 50%）
     auto visibleAt = [&](double jd) -> bool {
@@ -590,7 +600,9 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
             bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra)
                           && ev.tcaIllum > 0.5;
-            if (bestSunAlt < m_cfg.darkSkyThresholdDeg && satLit)
+            const double dark = m_cfg.darkSkyThresholdDeg
+                                - horizonDipDeg(observer.altKm());
+            if (bestSunAlt < dark && satLit)
                 ev.visibility = PassVisibility::Visible;
             else if (bestSunAlt < m_cfg.darkSkyThresholdDeg)
                 ev.visibility = PassVisibility::RadioOnly;

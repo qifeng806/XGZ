@@ -12,6 +12,8 @@
 
 // 注册跨线程信号槽所需的自定义类型
 Q_DECLARE_METATYPE(QVector<PassEvent>)
+// PassEvent 自身也注册: 供 QVariant 直接存取（回环/调试/序列化扩展）
+Q_DECLARE_METATYPE(PassEvent)
 
 class PassPredictWorker : public QObject {
     Q_OBJECT

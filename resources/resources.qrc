@@ -4,5 +4,6 @@
 <RCC>
     <qresource prefix="/">
         <file alias="land110m.txt">land110m.txt</file>
+        <file alias="app.ico">app.ico</file>
     </qresource>
 </RCC>

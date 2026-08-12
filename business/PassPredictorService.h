@@ -12,6 +12,8 @@
 #include "core/models.h"
 #include "PassPredictWorker.h"
 
+class QTimer;
+
 class PassPredictorService : public QObject {
     Q_OBJECT
 public:
@@ -55,6 +57,14 @@ private:
 
     void finishBatch();                 // 全部完成后排序并发出 resultReady
     bool cleanupJob(ActiveJob &job, int waitTimeoutMs);
+
+    // 孤儿线程回收: cleanupAll 超时(极端情况)放弃的线程不永久泄漏——
+    // 移入 m_orphans 后由后台定时器周期性再试 wait, 退出后 deleteLater。
+    // 进程存活期间最终全部回收; 析构时再兜底一次(超时仍不退才解除父子关系)
+    QVector<ActiveJob> m_orphans;
+    QTimer *m_reapTimer = nullptr;
+    void startReapTimer();
+    void reapOrphans();
 };
 
 #endif // BUSINESS_PASSPREDICTORSERVICE_H

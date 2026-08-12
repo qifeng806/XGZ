@@ -246,7 +246,8 @@ double TleParser::parseScientific(const std::string &s)
 {
     // 前6位是尾数（含前导空格或符号），后2位是指数
     // 格式: "Sm.mmmEE" 其中 S=符号/空格, m=尾数, E=指数符号, E=指数值
-    if (s.length() < 8) return 0.0;
+    if (s.length() < 8)
+        throw std::invalid_argument("B* field too short");
 
     std::string mantissaStr = s.substr(0, 6);
     std::string expStr = s.substr(6, 2);

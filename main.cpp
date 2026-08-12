@@ -4,6 +4,10 @@
 // =============================================================================
 #include <QApplication>
 #include <QSurfaceFormat>
+#include <QIcon>
+#include <QLockFile>
+#include <QMessageBox>
+#include <QDir>
 #include "ui/MainWindow.h"
 #include "core/models.h"
 
@@ -17,6 +21,15 @@ static void registerMetaTypes()
 int main(int argc, char *argv[])
 {
     registerMetaTypes();
+
+    // 单实例保护：同一用户会话内仅允许一个 XGZ 实例（锁随 main 栈对象持有至进程退出）
+    QLockFile lock(QDir::temp().filePath("xgz-" + qEnvironmentVariable("USERNAME", "user") + ".lock"));
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(10)) {
+        QMessageBox::information(nullptr, "XGZ",
+            "XGZ 已在运行，本实例即将退出。", QMessageBox::Ok);
+        return 0;
+    }
 
     QApplication app(argc, argv);
     app.setApplicationName("XGZ");
@@ -88,6 +101,7 @@ int main(int argc, char *argv[])
     )");
 
     MainWindow mainWindow;
+    mainWindow.setWindowIcon(QIcon(":/app.ico"));
     mainWindow.show();
 
     return app.exec();

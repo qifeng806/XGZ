@@ -124,6 +124,13 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
     double az = std::atan2(sinAz, cosAz);
     az = wrap2Pi(az);
 
+    // 方位角在两类退化位置下无物理意义且数值会任意跳变:
+    // 1) 太阳在天顶/天底 (|alt|≈±90°)  2) 观测站在极点 (|lat|≈±90°)
+    // → 稳定钳制为 0°（北），避免极区时段内方位角无意义的抖动
+    const double absAltDeg  = std::abs(rad2deg(alt));
+    const double absLatDeg  = std::abs(rad2deg(obsLat));
+    if (absAltDeg >= 89.9 || absLatDeg >= 89.9) az = 0.0;
+
     sp.azDeg  = rad2deg(az);     // 北=0°, 顺时针
     sp.altDeg = rad2deg(alt);    // 地平=0°
 

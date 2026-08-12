@@ -16,6 +16,7 @@ struct TleBlock {
 };
 
 // 解析多颗 TLE 文本块
-QVector<TleBlock> parseTleBlocks(const QString &text);
+// incompleteCount(可选出参): 半截块数量（只有行1/行2 而无配对者，静默丢失的源头）
+QVector<TleBlock> parseTleBlocks(const QString &text, int *incompleteCount = nullptr);
 
 #endif // BUSINESS_TLEBLOCKS_H

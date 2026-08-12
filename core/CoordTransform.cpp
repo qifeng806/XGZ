@@ -304,5 +304,14 @@ double CoordTransform::applyRefraction(double elGeomDeg)
     double hRad = deg2rad(elGeomDeg + 7.31 / (elGeomDeg + 4.4));
     double R_arcmin = 1.0 / std::tan(hRad);
     if (R_arcmin < 0.0) R_arcmin = 0.0;   // 防御: 数值误差导致的负值钳制为 0
+
+    // [0,1]° 线性过渡带: Bennett 在 0° 处 R≈0.57° 的突跳会让
+    // 掩星边缘的"视仰角"不连续 → 按 el/1° 线性缩放，从 0 平滑过渡
+    // 到 el=1° 处的 Bennett 值（el=1 时系数为 1，与 Bennett 无缝衔接；
+    // Bennett 从 1° 到 0° 仅从 0.41° 升至 0.57°，线性缩放后全程单调）
+    if (elGeomDeg < 1.0) {
+        R_arcmin *= elGeomDeg;
+    }
+
     return elGeomDeg + R_arcmin / 60.0;  // 弧分 → 度
 }

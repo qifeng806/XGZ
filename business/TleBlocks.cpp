@@ -3,11 +3,12 @@
 // =============================================================================
 #include "TleBlocks.h"
 
-QVector<TleBlock> parseTleBlocks(const QString &text)
+QVector<TleBlock> parseTleBlocks(const QString &text, int *incompleteCount)
 {
     QVector<TleBlock> blocks;
     QString pendingName;
     QString pendingL1;
+    int incomplete = 0;
 
     // TLE 行严格判据: 前缀 "1 "/"2 " 且长度 ≥ 69。
     // 避免把 "1U CUBESAT"、"1999-xxx 论文标题" 之类名称行误判为 TLE 行
@@ -23,16 +24,21 @@ QVector<TleBlock> parseTleBlocks(const QString &text)
         const QString l = raw.trimmed();
         if (l.isEmpty()) continue;
         if (isTleLine1(l)) {
+            if (!pendingL1.isEmpty()) incomplete++;  // 上一颗只有行1 → 半截块
             pendingL1 = l;
         } else if (isTleLine2(l)) {
             if (!pendingL1.isEmpty()) {
                 blocks.append({ pendingName, pendingL1, l });
                 pendingName.clear();
                 pendingL1.clear();
+            } else {
+                incomplete++;   // 只有行2 → 半截块
             }
         } else {
             pendingName = l;   // 非 TLE 行视为下一颗卫星的名称
         }
     }
+    if (!pendingL1.isEmpty()) incomplete++;   // 结尾残留单行1
+    if (incompleteCount) *incompleteCount = incomplete;
     return blocks;
 }

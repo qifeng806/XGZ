@@ -219,13 +219,17 @@ void TstCoordTransform::eciDirToEcefTest()
 void TstCoordTransform::refractionTests()
 {
     double r0 = CoordTransform::applyRefraction(0.0);
-    QVERIFY(r0 > 0.4 && r0 < 0.7);           // 地平附近 ≈ 0.57°
+    QCOMPARE(r0, 0.0);                       // [0,1]° 线性过渡带: 0° 处连续无突跳
+    double rHalf = CoordTransform::applyRefraction(0.5);
+    QVERIFY(rHalf > 0.70 && rHalf < 0.78);   // 0.5 + Bennett(0.5°)×0.5 ≈ 0.74°
+    double r1 = CoordTransform::applyRefraction(1.0);
+    QVERIFY(r1 > 1.38 && r1 < 1.44);         // el=1° 处与 Bennett(1°)≈0.41° 无缝衔接
     double r45 = CoordTransform::applyRefraction(45.0);
     QVERIFY(r45 > 45.0 && r45 < 45.05);      // 45° 处 < 0.05°
     double r90 = CoordTransform::applyRefraction(90.0);
     QVERIFY(r90 - 90.0 < 0.01);
     QCOMPARE(CoordTransform::applyRefraction(-5.0), -5.0);  // 负仰角不变
-    QVERIFY(r0 - 0.0 > r45 - 45.0);          // 单调递减
+    QVERIFY(rHalf - 0.0 > r45 - 45.0);       // 全程单调递减
 }
 
 int runTstCoordTransform(int argc, char *argv[])
