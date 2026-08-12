@@ -412,10 +412,12 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     // ---- 粗搜索 ----
     // 末次采样推进到窗口终点（jdEnd），防窗口末尾一个粗搜步长内的 AOS 漏检;
     // 对完全落在相邻两采样点之间的短过境做中点探测
-    auto assemblePass = [&](double jdAOS, double jdLOS) -> bool {
+    auto assemblePass = [&](double jdAOS, double jdLOS,
+                            bool truncated = false) -> bool {
         double durSec = (jdLOS - jdAOS) * 86400.0;
         if (durSec < m_cfg.minDurationSec) return false;
         PassEvent ev;
+        ev.truncated = truncated;   // EXTEND 截断: LOS 字段为瞬时值非真实出境
         computeMoment(propagate, observer, jdAOS, ev.aosLook, ev.aosSatGeo);
         ev.aosJdMs = jdToIntMs(jdAOS);
         // TCA（findTCA 内部取消时输出已知哨兵值，这里再检查一次取消）
@@ -450,12 +452,24 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                 candBelow = jd - stepDays;
                 candAbove = jd;
             } else if (prevEl < maskEl && jd - stepDays >= jdStart) {
-                // 步内短过境探测: 相邻两次采样之间 AOS/LOS 均出现（中点高于掩星角）
-                double jdMid = jd - 0.5 * stepDays;
-                if (elevationAt(propagate, observer, jdMid) >= maskEl) {
+                // 步内短过境探测(4 等分子步): 原实现只探中点, 完全落在
+                // 一个步长内且不跨中点的 10~15s 级短过境会漏检;
+                // 现对 4 个子区间逐段检测连续 ≥掩星角的子段并逐段装配
+                const double sub = stepDays / 4.0;
+                double pb[5] = { prevEl, el, el, el, el };   // 下标0/4 必低于掩星角
+                for (int k = 1; k <= 3; ++k)
+                    pb[k] = elevationAt(propagate, observer, jd - (4 - k) * sub);
+                for (int s = 1; s <= 3; ++s) {
+                    if (pb[s] < maskEl) continue;
+                    int t = s;
+                    while (t < 3 && pb[t + 1] >= maskEl) ++t;
+                    // 连续段 [s, t] 两端(t_{s-1}/t_{t+1})均低于掩星角 → 整段可装配
                     assemblePass(
-                        bisectAOS(propagate, observer, jd - stepDays, jdMid),
-                        bisectLOS(propagate, observer, jdMid, jd));
+                        bisectAOS(propagate, observer,
+                                  jd - (4 - (s - 1)) * sub, jd - (4 - s) * sub),
+                        bisectLOS(propagate, observer,
+                                  jd - (4 - t) * sub, jd - (4 - (t + 1)) * sub));
+                    s = t;
                 }
             }
         } else {
@@ -488,12 +502,14 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         }
 
         // 延长窗口结束仍未见 LOS（高轨/同步卫星长过境）:
-        // 以窗口终点为 LOS 近似收尾，避免过境整体丢失
+        // 以窗口终点为 LOS 截断收尾，避免过境整体丢失——标记 truncated,
+        // 其 LOS 字段/时长均为截断值而非真实出境值（UI 注明）
+        const bool truncated = (jdLos < 0.0);
         if (jdLos < 0.0)
             jdLos = jdExtend;
 
         double jdAOS = bisectAOS(propagate, observer, candBelow, jdLos);
-        assemblePass(jdAOS, jdLos);
+        assemblePass(jdAOS, jdLos, truncated);
     }
 
     // ---- 合并相邻过境 ----
@@ -508,6 +524,8 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                 // 后段 AOS（ms）: 两段间隙（地平线以下）内的采样点须丢弃,
                 // 否则绘出负仰角凹陷并破坏"采样仰角 ≥ 掩星角"的不变量
                 const int64_t curAosMs = passes[i].aosJdMs;
+                // 截断标记取并集: 任一段被 EXTEND 截断则合并结果仍是截断过境
+                if (passes[i].truncated) merged.back().truncated = true;
                 // 合并：用较晚的 LOS 替换
                 if (passes[i].losJdMs > merged.back().losJdMs) {
                     merged.back().losJdMs = passes[i].losJdMs;

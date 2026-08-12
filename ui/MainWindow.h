@@ -34,6 +34,10 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    // 关窗前先协作式取消在途计算/下载, 避免析构链中等待线程导致的冻结感
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void onPredict();
     void onBatchImport();

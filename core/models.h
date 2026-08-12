@@ -189,6 +189,10 @@ struct PassEvent {
     double magAtTca = 0.0;      // TCA 时刻视星等（越小越亮; magValid=false 时无效）
     bool   magValid = false;    // 星等可用（卫星未处本影且几何参数有效）
 
+    // 过境延续至预测窗口外（EXTEND 截断）: LOS 各字段为截断时刻瞬时值,
+    // 并非真实出境值; durationSec 为截断后时长（UI 需注明）
+    bool truncated = false;
+
     // 过境弧段采样（AOS→LOS 等步长采样，供极坐标/地面轨迹绘图与 KML 导出）
     std::vector<PassSample> samples;
 };

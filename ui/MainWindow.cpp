@@ -22,6 +22,7 @@
 #include <QScrollBar>
 #include <QSplitter>
 #include <QTimeZone>
+#include <QCloseEvent>
 
 // ============================================================================
 // 批量 TLE 导入辅助（文件局部）
@@ -350,10 +351,12 @@ void MainWindow::setupConnections()
     connect(m_tleFetcher, &TleFetcher::finished, this, [this]() {
         m_onlineUpdateBtn->setEnabled(true);
         m_onlineUpdateBtn->setText("下载 TLE");
-        // 下载收尾: 恢复预报入口（若当时无计算任务在跑）
-        if (!m_cancelBtn->isEnabled()) {
+        // 下载收尾: 无计算任务（m_batchMode=false）时恢复预报入口与取消按钮。
+        // 不用 cancelBtn 状态作守卫: 下载期间取消按钮也处于可用状态
+        if (!m_batchMode) {
             m_predictBtn->setEnabled(true);
             m_batchImportBtn->setEnabled(true);
+            m_cancelBtn->setEnabled(false);
         }
     });
     connect(m_cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
@@ -500,6 +503,8 @@ void MainWindow::onOnlineUpdate()
     // 下载期间禁止发起预报/批量（防止任务与下载交错）
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
+    // 取消按钮在下载期间可用: onCancel 会中止在途下载
+    m_cancelBtn->setEnabled(true);
     setStatusText(m_statusModel, QString("模型: 正在下载 %1 的 TLE…")
                   .arg(m_tleGroupCombo->currentText()));
     m_tleFetcher->fetchGroup(groupId);
@@ -632,9 +637,10 @@ void MainWindow::onCancel()
 
 void MainWindow::onClear()
 {
-    // M4 修复: 清空视图的同时终止在途计算, 防止迟到的结果覆盖刚清空的界面
-    //（cancelAll 递增序号, 迟到信号被服务层序号守卫丢弃; TLE 下载一并中止）
-    m_service->cancelAll();
+    // 清空视图的同时终止在途计算, 防止迟到的结果覆盖刚清空的界面。
+    // 用 cleanupAll(2000) 而非 cancelAll: 在途线程被协作式取消后回收
+    // （quit+wait), 反复"开始→清除"不残留空转线程/worker 对象
+    m_service->cleanupAll(2000);
     m_tleFetcher->cancel();
     m_batchMode = false;
     m_batchErrors.clear();
@@ -662,6 +668,16 @@ void MainWindow::onClear()
     m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+}
+
+// ============================================================================
+// 关闭窗口: 先协作式取消在途任务, 消除析构链中 cleanupAll 的等待冻结感
+// ============================================================================
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    m_service->cancelAll();      // 立即置协作取消标志, 线程毫秒级退出
+    m_tleFetcher->cancel();      // 中止在途下载
+    event->accept();
 }
 
 // ============================================================================
@@ -736,7 +752,8 @@ void MainWindow::onTableRowSelected(int row, int col)
 // ============================================================================
 void MainWindow::populateTable(const QVector<PassEvent> &passes)
 {
-    m_passTable->setRowCount(0);
+    // 单次 setRowCount(n): 自动裁剪/扩充行, 不再先清零再重建
+    //（滤波/时区切换反复刷新时省去全表重建的卡顿）
     m_passTable->setRowCount(passes.size());
 
     int tzOffsetSec = m_timezoneCombo->currentData().toInt();
@@ -781,7 +798,15 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         setCell(1,  QString::fromStdString(p.satelliteName));
         setCell(2,  jdMsToStr(p.aosJdMs));
         setCell(3,  jdMsToStr(p.losJdMs));
-        setCell(4,  QString("%1s").arg(static_cast<int>(p.durationSec)));
+        setCell(4,  QString("%1s%2")
+                .arg(static_cast<int>(p.durationSec))
+                .arg(p.truncated ? " *" : ""));
+        // 截断过境: 过境延续至预测窗口外, 出境时刻并非真实值
+        if (p.truncated) {
+            auto *durItem = m_passTable->item(r, 4);
+            if (durItem)
+                durItem->setToolTip("过境延续至预测窗口结束时刻（真实出境在窗口外, 持续时长被截断）");
+        }
         setCell(5,  QString::number(p.maxElevDeg, 'f', 1) + "°");
 
         // 大气折射后的视仰角（几何仰角带过 tooltip 展示，仅显示用；
@@ -992,10 +1017,10 @@ void MainWindow::onExportKML()
         << "<Document>\n"
         << "<name>XGZ Satellite Passes</name>\n";
 
-    // 标注地面站
+    // 标注地面站（使用任务锁定坐标, 与图表/轨迹标记一致, 而非当前输入框值）
     out << "<Placemark>\n<name>Ground Station</name>\n"
         << "<Point><coordinates>"
-        << m_lonSpin->value() << "," << m_latSpin->value() << ",0"
+        << m_taskLonDeg << "," << m_taskLatDeg << ",0"
         << "</coordinates></Point>\n</Placemark>\n";
 
     for (int i = 0; i < m_filteredPasses.size(); ++i) {

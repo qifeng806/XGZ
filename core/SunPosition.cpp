@@ -40,6 +40,8 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
     SunPosition sp;
 
     // ---- Step 1: 儒略千年数（J2000.0 起算, TT 时标） ----
+    // 注: T 以千年为单位(除数 365250), 而 Meeus 系数按世纪编制,
+    // 后续多项式须以 (T×10) 折算——勿被注释误导改回世纪制
     double T = (jdTT - 2451545.0) / 365250.0;
 
     // ---- Step 2: 太阳平黄经（度 → rad） ----

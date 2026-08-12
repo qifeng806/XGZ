@@ -74,9 +74,23 @@ void PassPredictWorker::runOneJob(const Job &job)
 
     const auto &tle = *tleOpt;
 
-    // ---- Step 1.5: 上报 TLE 元信息（模型/历元/龄期，供 UI 展示与过期警告） ----
+    // ---- Step 2: 初始化 Propagator（封装 perturb::Satellite） ----
+    Propagator prop;
+    std::string errMsg;
+    bool ok = prop.initialize(
+        job.tleLine1.toStdString(),
+        job.tleLine2.toStdString(), errMsg);
+
+    if (!ok) {
+        emit errorOccurred(QString::fromStdString(errMsg));
+        return;
+    }
+
+    // ---- Step 1.5: 上报 TLE 元信息（模型/历元/龄期，供 UI 展示与过期警告）----
+    // 模型标签取 perturb 实际使用的深空分类(no_unkozai 周期), 与 TLE 行 2
+    // 的 Kozai 平运动分类在 225min 边界附近可能不一致——以实际传播模型为准
     QString modelStr;
-    switch (tle.ephemerisType) {
+    switch (prop.modelType()) {
     case Sgp4Type::LEO_SGP4:    modelStr = "SGP4"; break;
     case Sgp4Type::MEO_SDP4:    modelStr = "SDP4"; break;
     case Sgp4Type::GEO_SDP4_DS: modelStr = "SDP4(DS)"; break;
@@ -90,18 +104,6 @@ void PassPredictWorker::runOneJob(const Job &job)
                   QDateTime::fromMSecsSinceEpoch(epochMs, QTimeZone::UTC)
                       .toString("yyyy-MM-dd HH:mm:ss 'UTC'"),
                   ageDays);
-
-    // ---- Step 2: 初始化 Propagator（封装 perturb::Satellite） ----
-    Propagator prop;
-    std::string errMsg;
-    bool ok = prop.initialize(
-        job.tleLine1.toStdString(),
-        job.tleLine2.toStdString(), errMsg);
-
-    if (!ok) {
-        emit errorOccurred(QString::fromStdString(errMsg));
-        return;
-    }
 
     // 设置卫星名称
     prop.setSatelliteName(tle.name);

@@ -67,7 +67,12 @@ void TleFetcher::startRequest(const QUrl &url, const QString &tag)
 {
     // 新请求开始即解除历史取消状态（防残留标志吞掉本次正常结果）
     m_cancelled = false;
-    if (m_reply) m_reply->deleteLater();   // 并发保护: 丢弃旧请求
+    if (m_reply) {
+        // 立即中止旧传输: 仅 deleteLater 时旧请求在 DeferredDelete 被处理前
+        // 仍会继续占带宽下载（千星组 ~1-2MB 级）
+        m_reply->abort();
+        m_reply->deleteLater();   // 并发保护: 丢弃旧请求
+    }
 
     QNetworkRequest req(url);
     req.setTransferTimeout(30000);
@@ -90,6 +95,7 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
     if (m_cancelled) {
         m_cancelled = false;
         if (m_reply == reply) m_reply = nullptr;
+        m_pendingTag.clear();   // 陈旧 tag 一并清掉, 防未来按 tag 过滤时误判
         reply->deleteLater();   // 修复: 取消分支此前漏删 reply，反复取消会累积泄漏
         return;
     }
@@ -105,7 +111,12 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
 
     const QNetworkReply::NetworkError err = reply->error();
     if (err != QNetworkReply::NoError) {
-        emit fetchError(QString("网络错误: %1").arg(reply->errorString()));
+        // 附带 HTTP 状态码（CelesTrak 有速率限制 429, 便于用户区分限流/服务端错）
+        const int httpCode = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        emit fetchError(httpCode > 0
+            ? QString("网络错误(HTTP %1): %2").arg(httpCode).arg(reply->errorString())
+            : QString("网络错误: %1").arg(reply->errorString()));
         emit finished();
         return;
     }

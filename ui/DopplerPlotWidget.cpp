@@ -151,9 +151,10 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     // 曲线
     const bool hasSel = (m_selectedIndex >= 0 && m_selectedIndex < m_passes.size()
                          && hasDopplerData(m_passes[m_selectedIndex]));
-    for (int idx : curveIdx) {
+    for (int i = 0; i < curveIdx.size(); ++i) {
+        const int idx = curveIdx[i];
         const bool isSel = (idx == m_selectedIndex);
-        QColor col = kPalette[curveIdx.indexOf(idx) % (sizeof(kPalette) / sizeof(kPalette[0]))];
+        QColor col = kPalette[i % (sizeof(kPalette) / sizeof(kPalette[0]))];
         if (hasSel && !isSel) {
             col.setAlpha(150);
             painter.setPen(QPen(col, 1.5));

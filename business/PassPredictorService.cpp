@@ -75,6 +75,9 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
     m_batchCompleted = 0;
     m_batchTotal = jobs.size();
     m_batchFinished = false;   // 新批次开始, 允许转发单星元信息
+    // 预分配: PassEvent 含 std::vector<PassSample>, QVector 扩容重分配会对
+    // 存量元素整体深拷贝(非共享), 千颗级批量下是 O(n²) 开销
+    m_batchPasses.reserve(qMin<qsizetype>(m_batchTotal * 4, 400000));
     const int seq = ++m_batchSeq;   // 本批次序号: 迟到的旧批次信号在此校验丢弃
 
     // 固定大小 worker 池（H2 修复）: 逐颗建线程在 starlink/active 等大组
@@ -183,10 +186,14 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
             return false;
         }
     } else {
-        // 线程未被观察为运行状态（尚未启动或已结束）: 防御性地 quit()
-        // 一次——若 start() 已发出而 OS 线程即将进入运行, quit 会让其
-        // 立即退出, 避免 deleteLater 落在"正在启动/运行"的线程上
+        // 线程未被观察为运行状态（尚未启动或已结束）: 防御性 quit()。
+        // 删除改由 finished→deleteLater 兜底——若 OS 线程尚未进入 run(),
+        // 主循环当轮处理 DeferredDelete 时线程可能仍在启动, 直接
+        // deleteLater 会触发 "QThread: Destroyed while still running"
         aj.thread->quit();
+        QObject::connect(aj.thread, &QThread::finished,
+                         aj.thread, &QObject::deleteLater);
+        return true;
     }
     aj.thread->deleteLater();
     aj.thread = nullptr;
