@@ -243,6 +243,12 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     std::vector<PassEvent> passes;
 
     m_cancel = cancel;
+    // RAII: 任意退出路径（含取消提前返回）后清空成员指针，
+    // 防调用方销毁 cancel 目标后对象被复用时读到悬垂指针
+    struct CancelReset {
+        const std::atomic<bool> *&ref;
+        ~CancelReset() { ref = nullptr; }
+    } cancelReset{m_cancel};
 
     // 初始状态: 若窗口起点已在掩星角之上，视为过境中（AOS 在窗口前，用窗口起点作下界）
     double el0 = elevationAt(propagate, observer, jdStart);

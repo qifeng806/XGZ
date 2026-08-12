@@ -10,8 +10,10 @@ PassPredictorService::PassPredictorService(QObject *parent)
 
 PassPredictorService::~PassPredictorService()
 {
-    cancelAll();
-    cleanupAll();
+    // 析构路径: 带超时等待，防止窗口关闭时被长时间批量任务卡死。
+    // 协作取消使任务通常毫秒级退出；超时(极端情况)后线程在后台自然后退，
+    // 进程退出时由系统回收，绝不在主线程无限阻塞。
+    cleanupAll(2000);
 }
 
 void PassPredictorService::startJob(const PassPredictWorker::Job &job)
@@ -34,8 +36,6 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
     // 转发信号
     connect(worker, &PassPredictWorker::resultReady,
             this, &PassPredictorService::resultReady);
-    connect(worker, &PassPredictWorker::progressUpdate,
-            this, &PassPredictorService::progressUpdate);
     connect(worker, &PassPredictWorker::errorOccurred,
             this, &PassPredictorService::errorOccurred);
 
@@ -122,28 +122,41 @@ void PassPredictorService::cancelAll()
     }
 }
 
-void PassPredictorService::cleanupJob(ActiveJob &aj)
+bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
 {
-    if (aj.thread) {
-        // 如果线程仍在运行，请求退出并等待（协作式取消保证快速退出，
-        // 不再使用已弃用的 QThread::terminate()）
-        if (aj.thread->isRunning()) {
-            aj.thread->quit();
-            aj.thread->wait();
-        }
-        aj.thread->deleteLater();
-        aj.thread = nullptr;
+    if (!aj.thread) {
+        aj.worker = nullptr;
+        return true;
     }
+    if (aj.thread->isRunning()) {
+        // 请求事件循环退出并等待。协作式取消保证线程快速退出，
+        // 不再使用已弃用的 QThread::terminate()
+        aj.thread->quit();
+        bool exited = (waitTimeoutMs > 0)
+            ? aj.thread->wait(waitTimeoutMs)
+            : aj.thread->wait();
+        if (!exited) {
+            // 超时: 线程仍在运行（极端情况）。放弃等待，让线程在后台
+            // 自然后退；不 deleteLater（running 中析构会告警），
+            // 对象随进程退出回收。
+            aj.thread = nullptr;
+            aj.worker = nullptr;
+            return false;
+        }
+    }
+    aj.thread->deleteLater();
+    aj.thread = nullptr;
     aj.worker = nullptr;  // worker 已通过 finished → deleteLater 被清理
+    return true;
 }
 
-void PassPredictorService::cleanupAll()
+void PassPredictorService::cleanupAll(int waitTimeoutMs)
 {
     // 先取消，给线程时间自然退出
     cancelAll();
     // 清理所有 job
     for (auto &aj : m_activeJobs) {
-        cleanupJob(aj);
+        cleanupJob(aj, waitTimeoutMs);
     }
     m_activeJobs.clear();
 }

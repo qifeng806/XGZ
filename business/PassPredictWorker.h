@@ -38,7 +38,6 @@ public slots:
 
 signals:
     void resultReady(QVector<PassEvent> passes);
-    void progressUpdate(int percent);
     void errorOccurred(QString message);
 
 private:

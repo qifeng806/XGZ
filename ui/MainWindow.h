@@ -92,8 +92,6 @@ private:
 
     // 状态栏
     QLabel       *m_statusModel;
-    QLabel       *m_statusEpoch;
-    QLabel       *m_statusAge;
     QLabel       *m_statusCount;
     QProgressBar *m_progressBar;
 

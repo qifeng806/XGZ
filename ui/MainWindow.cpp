@@ -230,15 +230,11 @@ void MainWindow::setupUI()
 
     mainLayout->addLayout(btnLayout);
 
-    // ---- 状态栏 ----
+// ---- 状态栏 ----
     auto *statusLayout = new QHBoxLayout;
     m_statusModel = new QLabel("模型: —");
-    m_statusEpoch = new QLabel("历元: —");
-    m_statusAge   = new QLabel("龄期: —");
     m_statusCount = new QLabel("过境: 0");
     statusLayout->addWidget(m_statusModel);
-    statusLayout->addWidget(m_statusEpoch);
-    statusLayout->addWidget(m_statusAge);
     statusLayout->addWidget(m_statusCount);
     statusLayout->addStretch();
     mainLayout->addLayout(statusLayout);
@@ -495,12 +491,16 @@ void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
 
 void MainWindow::onCancel()
 {
-    m_service->cancelAll();
+    // 清除全部计算线程（内部先协作式取消，毫秒级退出）
+    m_service->cleanupAll();
+    // 中止在途的在线 TLE 下载（无活动请求时静默无效）
+    m_tleFetcher->cancel();
     m_batchMode = false;
     m_batchErrors.clear();
     m_predictBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+    // 下载流程收尾（cancel() 内已 emit finished，此处为空操作保留语义清晰）
 }
 
 void MainWindow::onClear()
@@ -512,8 +512,6 @@ void MainWindow::onClear()
     m_polarPlot->clear();
     m_groundTrack->clear();
     m_statusModel->setText("模型: —");
-    m_statusEpoch->setText("历元: —");
-    m_statusAge->setText("龄期: —");
     m_statusCount->setText("过境: 0");
 }
 
@@ -601,6 +599,14 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         setCell(3,  jdMsToStr(p.losJdMs));
         setCell(4,  QString("%1s").arg(static_cast<int>(p.durationSec)));
         setCell(5,  QString::number(p.maxElevDeg, 'f', 1) + "°");
+
+        // 大气折射后的视仰角（几何仰角带过 tooltip 展示，仅显示用；
+        // AOS/LOS 判定仍用几何仰角）
+        auto *elTipItem = m_passTable->item(r, 5);
+        if (elTipItem && p.tcaElRefracted > 0.0) {
+            elTipItem->setToolTip(
+                QString("折射后最大仰角: %1°").arg(p.tcaElRefracted, 0, 'f', 1));
+        }
         setCell(6,  QString::number(p.tcaLook.azDeg, 'f', 1) + "°");
 
         // 可见性
@@ -677,7 +683,7 @@ void MainWindow::onExportCSV()
     out.setGenerateByteOrderMark(true);
 
     // 表头
-    out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),方位角(°),"
+    out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),折射仰角(°),方位角(°),"
            "可见性,太阳高度(°),卫星光照,入境纬度(°),入境经度(°),入境高度(km),"
            "斜距(km),多普勒(kHz),质量,AOS光照,TCA光照,LOS光照\n";
 
@@ -703,6 +709,7 @@ void MainWindow::onExportCSV()
             << jdToStr(p.losJdMs) << ","
             << p.durationSec << ","
             << p.maxElevDeg << ","
+            << p.tcaElRefracted << ","
             << p.tcaLook.azDeg << ","
             << visStr << ","
             << p.tcaSunAlt << ","

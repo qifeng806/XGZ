@@ -121,46 +121,46 @@ void PolarPlotWidget::paintEvent(QPaintEvent *)
         painter.setPen(QPen(QColor(80, 80, 80), 1));
     }
 
-        // 绘制各过境的仰角-方位角曲线（全部以半透明绘制）
-        QVector<QColor> passColors = {
-            QColor(100, 200, 255), QColor(255, 180, 80),
-            QColor(150, 255, 150), QColor(255, 130, 130),
-            QColor(200, 160, 255), QColor(255, 255, 120)
-        };
+    // 绘制各过境的仰角-方位角曲线（全部以半透明绘制）
+    QVector<QColor> passColors = {
+        QColor(100, 200, 255), QColor(255, 180, 80),
+        QColor(150, 255, 150), QColor(255, 130, 130),
+        QColor(200, 160, 255), QColor(255, 255, 120)
+    };
 
-        for (int pi = 0; pi < m_passes.size(); ++pi) {
-            const auto &p = m_passes[pi];
-            bool isSelected = (pi == m_selectedIndex);
-            QColor col = passColors[pi % passColors.size()];
-            if (!isSelected) col.setAlpha(80);
+    for (int pi = 0; pi < m_passes.size(); ++pi) {
+        const auto &p = m_passes[pi];
+        bool isSelected = (pi == m_selectedIndex);
+        QColor col = passColors[pi % passColors.size()];
+        if (!isSelected) col.setAlpha(80);
 
-            QPainterPath path;
-            // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
-            QPointF aosP = polarToScreen(p.aosLook.azDeg, p.aosLook.elevDeg, cx, cy, radius);
-            QPointF tcaP = polarToScreen(p.tcaLook.azDeg, p.maxElevDeg, cx, cy, radius);
-            QPointF losP = polarToScreen(p.losLook.azDeg, p.losLook.elevDeg, cx, cy, radius);
+        QPainterPath path;
+        // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
+        QPointF aosP = polarToScreen(p.aosLook.azDeg, p.aosLook.elevDeg, cx, cy, radius);
+        QPointF tcaP = polarToScreen(p.tcaLook.azDeg, p.maxElevDeg, cx, cy, radius);
+        QPointF losP = polarToScreen(p.losLook.azDeg, p.losLook.elevDeg, cx, cy, radius);
 
-            if (p.samples.size() >= 2) {
-                // 真实弧段: Catmull-Rom 平滑曲线（经过所有采样点）
-                // 方位角跨 0°/360° 处断开分段平滑，避免整圈环绕伪影
-                QVector<QPointF> seg;
-                for (size_t k = 0; k < p.samples.size(); ++k) {
-                    const auto &s = p.samples[k];
-                    if (!seg.isEmpty()) {
-                        double daz = std::abs(s.look.azDeg - p.samples[k - 1].look.azDeg);
-                        if (daz > 180.0) {    // 跨 0°/360°: 断开
-                            path.addPath(CatmullRom::path(seg));
-                            seg.clear();
-                        }
+        if (p.samples.size() >= 2) {
+            // 真实弧段: Catmull-Rom 平滑曲线（经过所有采样点）
+            // 方位角跨 0°/360° 处断开分段平滑，避免整圈环绕伪影
+            QVector<QPointF> seg;
+            for (size_t k = 0; k < p.samples.size(); ++k) {
+                const auto &s = p.samples[k];
+                if (!seg.isEmpty()) {
+                    double daz = std::abs(s.look.azDeg - p.samples[k - 1].look.azDeg);
+                    if (daz > 180.0) {    // 跨 0°/360°: 断开
+                        path.addPath(CatmullRom::path(seg));
+                        seg.clear();
                     }
-                    seg.append(polarToScreen(s.look.azDeg, s.look.elevDeg, cx, cy, radius));
                 }
-                path.addPath(CatmullRom::path(seg));
-            } else {
-                // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
-                path.moveTo(aosP);
-                path.quadTo(tcaP, losP);
+                seg.append(polarToScreen(s.look.azDeg, s.look.elevDeg, cx, cy, radius));
             }
+            path.addPath(CatmullRom::path(seg));
+        } else {
+            // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
+            path.moveTo(aosP);
+            path.quadTo(tcaP, losP);
+        }
 
         painter.setPen(QPen(col, isSelected ? 3 : 1));
         painter.setBrush(Qt::NoBrush);

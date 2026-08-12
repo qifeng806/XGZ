@@ -125,12 +125,13 @@ void TstOrbitCalc::aosLosAtMaskElevation()
         QVERIFY(std::abs(ev.losLook.elevDeg - 10.0) < 0.05);
         // 星下点高度一致性: 合成轨道是半径 A 的球面，因此由报出的
         // (φ, λ, h) 反算的 ECEF 点必须落在该球面上: |geodeticToEcef| = A
-        auto checkRadius = [A](const GeoPos &g, const char *tag) {
+        const double orbitRadiusKm = A;
+        auto checkRadius = [orbitRadiusKm](const GeoPos &g, const char *tag) {
             auto ec = CoordTransform::geodeticToEcef(g);
             double mag = std::sqrt(ec[0] * ec[0] + ec[1] * ec[1] + ec[2] * ec[2]);
-            QVERIFY2(std::abs(mag - A) < 1e-3,
+            QVERIFY2(std::abs(mag - orbitRadiusKm) < 1e-3,
                      qPrintable(QString("%1: |ECEF|=%2 期望 %3")
-                                .arg(tag).arg(mag, 0, 'f', 4).arg(A, 0, 'f', 4)));
+                                .arg(tag).arg(mag, 0, 'f', 4).arg(orbitRadiusKm, 0, 'f', 4)));
         };
         checkRadius(ev.aosSatGeo, "aos");
         checkRadius(ev.tcaSatGeo, "tca");

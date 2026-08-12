@@ -27,9 +27,13 @@ public:
     // 取消当前所有计算
     void cancelAll();
 
+    // 清理所有任务线程。
+    // waitTimeoutMs: 单个线程的最长等待时间（毫秒）；>0 时超时后放弃等待
+    //（让线程在后台自然后退，避免析构路径卡死主线程），≤0 表示无限等待
+    void cleanupAll(int waitTimeoutMs = -1);
+
 signals:
     void resultReady(QVector<PassEvent> passes);
-    void progressUpdate(int percent);
     void errorOccurred(QString message);
     void batchProgress(int completed, int total);
 
@@ -47,8 +51,7 @@ private:
     int  m_batchSeq       = 0;          // 批次序号: 防旧批次迟到信号污染新批次
 
     void finishBatch();                 // 全部完成后排序并发出 resultReady
-    void cleanupJob(ActiveJob &job);
-    void cleanupAll();
+    bool cleanupJob(ActiveJob &job, int waitTimeoutMs);
 };
 
 #endif // BUSINESS_PASSPREDICTORSERVICE_H

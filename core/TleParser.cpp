@@ -2,11 +2,46 @@
 // TleParser.cpp — TLE 两行根数解析实现
 // =============================================================================
 #include "TleParser.h"
-#include <cctype>
-#include <cstdlib>
+#include <charconv>
 #include <cmath>
-#include <sstream>
-#include <iomanip>
+#include <stdexcept>
+
+namespace {
+
+// 整段消费解析（拒绝 "nan"/"inf"/部分数字如 "12x3" → 12 的静默截断）
+// 前后空白允许（TLE 数字字段固定宽度带前导空格）
+bool parseStrict(const std::string &raw, double &out)
+{
+    std::string s = raw;
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    const size_t e = s.find_last_not_of(" \t\r\n");
+    s = s.substr(b, e - b + 1);
+
+    auto res = std::from_chars(s.data(), s.data() + s.size(), out);
+    return (res.ec == std::errc() && res.ptr == s.data() + s.size()
+            && std::isfinite(out));
+}
+
+bool parseStrict(const std::string &raw, int &out)
+{
+    std::string s = raw;
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    const size_t e = s.find_last_not_of(" \t\r\n");
+    s = s.substr(b, e - b + 1);
+    if (s.empty()) return false;
+
+    // from_chars(C++17) 整数版不支持 '+' 符号（TLE B* 指数常见 "+0"）
+    if (s[0] == '+')
+        s.erase(0, 1);
+    if (s.empty()) return false;
+
+    auto res = std::from_chars(s.data(), s.data() + s.size(), out);
+    return (res.ec == std::errc() && res.ptr == s.data() + s.size());
+}
+
+} // namespace
 
 // 从三行格式解析 TLE
 std::optional<TleData> TleParser::parse(
@@ -59,14 +94,15 @@ std::optional<TleData> TleParser::parse(
     }
 
     // ---- 步骤 3: NORAD 编号（行1 列3-7） ----
-    try {
-        std::string noradStr = line1.substr(2, 5);
-        tle.noradID = std::stoi(noradStr);
-    } catch (...) {
-        err.code = ParseError::BAD_NORAD;
-        err.detail = "Invalid NORAD ID";
-        if (errOut) *errOut = err;
-        return std::nullopt;
+    {
+        int nid = 0;
+        if (!parseStrict(line1.substr(2, 5), nid)) {
+            err.code = ParseError::BAD_NORAD;
+            err.detail = "Invalid NORAD ID";
+            if (errOut) *errOut = err;
+            return std::nullopt;
+        }
+        tle.noradID = nid;
     }
 
     // 默认名称
@@ -74,10 +110,18 @@ std::optional<TleData> TleParser::parse(
 
     // ---- 步骤 4: 历元（行1 列19-32） ----
     // 格式: YYDDD.DDDDDDDD（2位年 + 3位日 + 8位小数）
-    try {
-        std::string epochStr = line1.substr(18, 14);
-        int epochYr2 = std::stoi(epochStr.substr(0, 2));
-        double epochDayVal = std::stod(epochStr.substr(2));
+    {
+        const std::string epochStr = line1.substr(18, 14);
+        int epochYr2 = 0;
+        double epochDayVal = 0.0;
+        if (!parseStrict(epochStr.substr(0, 2), epochYr2)
+            || !parseStrict(epochStr.substr(2), epochDayVal)
+            || epochDayVal < 0.0 || epochDayVal >= 367.0) {
+            err.code = ParseError::BAD_EPOCH;
+            err.detail = "Invalid epoch format";
+            if (errOut) *errOut = err;
+            return std::nullopt;
+        }
 
         // 2位年份 → 4位年份: ≤56 → 2000+y, >56 → 1900+y
         if (epochYr2 <= 56)
@@ -86,11 +130,6 @@ std::optional<TleData> TleParser::parse(
             tle.epochYear = 1900 + epochYr2;
 
         tle.epochDay = epochDayVal;
-    } catch (...) {
-        err.code = ParseError::BAD_EPOCH;
-        err.detail = "Invalid epoch format";
-        if (errOut) *errOut = err;
-        return std::nullopt;
     }
 
     // ---- 步骤 5: B* 阻力项（行1 列54-61） ----
@@ -106,33 +145,44 @@ std::optional<TleData> TleParser::parse(
     }
 
     // ---- 步骤 6: 行2 各轨道根数 ----
-    try {
+    {
+        auto fail = [&]() {
+            err.code = ParseError::BAD_ELEMENTS;
+            err.detail = "Invalid orbital element format";
+            if (errOut) *errOut = err;
+            return std::nullopt;
+        };
+
+        double v = 0.0;
+        int    rv = 0;
+
         // 倾角（列9-16，度）
-        tle.inclinationDeg = std::stod(line2.substr(8, 8));
+        if (!parseStrict(line2.substr(8, 8), v)) return fail();
+        tle.inclinationDeg = v;
 
         // 升交点赤经（列18-25，度）
-        tle.raanDeg = std::stod(line2.substr(17, 8));
+        if (!parseStrict(line2.substr(17, 8), v)) return fail();
+        tle.raanDeg = v;
 
         // 偏心率（列27-33，省略前导"0."）
-        std::string eccStr = line2.substr(26, 7);
-        tle.eccentricity = std::stod("0." + eccStr);
+        if (!parseStrict("0." + line2.substr(26, 7), v)) return fail();
+        tle.eccentricity = v;
 
         // 近地点辐角（列35-42，度）
-        tle.argPerigeeDeg = std::stod(line2.substr(34, 8));
+        if (!parseStrict(line2.substr(34, 8), v)) return fail();
+        tle.argPerigeeDeg = v;
 
         // 平近点角（列44-51，度）
-        tle.meanAnomalyDeg = std::stod(line2.substr(43, 8));
+        if (!parseStrict(line2.substr(43, 8), v)) return fail();
+        tle.meanAnomalyDeg = v;
 
         // 平运动（列53-63，rev/day）
-        tle.meanMotionRevDay = std::stod(line2.substr(52, 11));
+        if (!parseStrict(line2.substr(52, 11), v)) return fail();
+        tle.meanMotionRevDay = v;
 
         // 圈号（列64-68）
-        tle.revNumber = static_cast<int>(std::stod(line2.substr(63, 5)));
-    } catch (...) {
-        err.code = ParseError::BAD_ELEMENTS;
-        err.detail = "Invalid orbital element format";
-        if (errOut) *errOut = err;
-        return std::nullopt;
+        if (!parseStrict(line2.substr(63, 5), rv)) return fail();
+        tle.revNumber = rv;
     }
 
     // ---- 步骤 7: 范围检查 ----
@@ -167,10 +217,10 @@ std::optional<TleData> TleParser::parse(
     }
 
     // ---- 步骤 10: 元素集编号 ----
-    try {
-        tle.elsetNum = std::stoi(line1.substr(64, 4));
-    } catch (...) {
-        tle.elsetNum = 0;
+    {
+        int n = 0;
+        if (!parseStrict(line1.substr(64, 4), n)) n = 0;   // 非致命，容错
+        tle.elsetNum = n;
     }
 
     if (errOut) *errOut = err;
@@ -191,6 +241,7 @@ Sgp4Type TleParser::classifyModel(double meanMotionRevDay)
 }
 
 // 科学记数法解析（如 " 12345-3" → 0.12345 × 10⁻³）
+// 严格整段消费，指数超界（TLE 规范为 [-9, +9]）或非法字符 → 抛异常
 double TleParser::parseScientific(const std::string &s)
 {
     // 前6位是尾数（含前导空格或符号），后2位是指数
@@ -207,10 +258,14 @@ double TleParser::parseScientific(const std::string &s)
     // 确保开头有符号或数字
     if (mantissaStr[0] == ' ') mantissaStr[0] = '0';
 
-    double mantissa = std::stod(mantissaStr) * 1e-5;  // TLE格式: 隐含前导小数点
-    int exponent = std::stoi(expStr);
+    double mantissa = 0.0;
+    int exponent = 0;
+    if (!parseStrict(mantissaStr, mantissa) || !parseStrict(expStr, exponent))
+        throw std::invalid_argument("bad B* field");
+    if (exponent < -9 || exponent > 9)
+        throw std::invalid_argument("B* exponent out of range");
 
-    return mantissa * std::pow(10.0, exponent);
+    return mantissa * 1e-5 * std::pow(10.0, exponent);  // TLE格式: 隐含前导小数点
 }
 
 // 校验和验证（模 10）
