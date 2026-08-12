@@ -45,9 +45,9 @@ double elevationAt(const OrbitCalculator::PropagateFn &fn,
 {
     auto st = fn(jd);
     if (!st) return -1000.0;
-    // 与引擎一致: 坐标旋转使用 ΔT 修正后的 UT1
-    const double jdUt1 = jd + CoordTransform::deltaTSeconds(jd) / 86400.0;
-    return obs.lookAngle(CoordTransform::eciToEcef(st->posKm, jdUt1)).elevDeg;
+    // 与引擎一致: 坐标旋转用 UTC 儒略日（UT1−UTC ≤ 0.9s, 直接近似;
+    // 切不可加 ΔT，否则地固系旋转系统性错位 ~69s → 峰值偏差达数度）
+    return obs.lookAngle(CoordTransform::eciToEcef(st->posKm, jd)).elevDeg;
 }
 
 // 断言浮点有限
@@ -150,12 +150,14 @@ void TstOrbitCalc::tcaIsTrueMaximum()
     QVERIFY(passes.size() >= 4);
 
     for (const auto &ev : passes) {
-        // 独立 5s 步进扫描 [AOS, LOS] 找最大仰角, 与引擎 TCA 对比
+        // 独立精细扫描 [AOS, LOS] 找最大仰角, 与引擎 TCA 对比。
+        // 引擎用三分搜索细化到真实峰顶, 稀疏网格（如 5s）会钝化峰顶
+        //（近天顶过境 5s 偏移可达 2°+）, 故独立扫描用 0.2s 步进
         double best = -1000.0;
         const double jdA = static_cast<double>(ev.aosJdMs) / 86400000.0;
         const double jdL = static_cast<double>(ev.losJdMs) / 86400000.0;
         auto fn = keplerFn(90.0);
-        for (double jd = jdA; jd <= jdL; jd += 5.0 / 86400.0)
+        for (double jd = jdA; jd <= jdL; jd += 0.2 / 86400.0)
             best = std::max(best, elevationAt(fn, obs, jd));
         QVERIFY2(std::abs(best - ev.maxElevDeg) < 0.05,
                  qPrintable(QString("TCA=%1 scan=%2")

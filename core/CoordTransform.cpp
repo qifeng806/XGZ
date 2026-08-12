@@ -2,6 +2,7 @@
 // CoordTransform.cpp — 坐标转换完整实现
 // =============================================================================
 #include "CoordTransform.h"
+#include <algorithm>
 #include <cmath>
 
 #ifndef M_PI
@@ -20,6 +21,8 @@ namespace {
 
 // ============================================================================
 // gmstRad — IAU-1982 格林尼治平恒星时（弧度）
+// 输入为 UT1 儒略日；可用 UTC 直接近似（UT1−UTC ≤ 0.9s），
+// 切勿加 ΔT（ΔT = TT−UT1，加了得到 TT，地球自转角会系统性偏大 ~69s 恒星时）
 // ============================================================================
 double CoordTransform::gmstRad(double jdUt1)
 {
@@ -92,14 +95,6 @@ double CoordTransform::deltaTSeconds(double jdUtc)
     // ≥ 2050（含 extrapolate 2100 后）
     double t = (year - 1820.0) / 100.0;
     return -20.0 + 32.0 * t * t - 0.5628 * (2150.0 - year);
-}
-
-// ============================================================================
-// gmstRadUtc — GMST（输入 UTC 儒略日，内部自动加 ΔT 修正为 UT1）
-// ============================================================================
-double CoordTransform::gmstRadUtc(double jdUtc)
-{
-    return gmstRad(jdUtc + deltaTSeconds(jdUtc) / SEC_PER_DAY);
 }
 
 // ============================================================================
@@ -285,7 +280,8 @@ LookAngle CoordTransform::computeLookAngle(
         return LookAngle(90.0, 0.0, 0.0);  // 卫星在头顶（理想情况）
     }
 
-    double elDeg = std::asin(u / range) * 180.0 / PI;
+    // 钳制防浮点舍入使 |u/range| 略超 1（卫星在天顶附近时 e、n 趋于 0）
+    double elDeg = std::asin(std::clamp(u / range, -1.0, 1.0)) * 180.0 / PI;
     double azDeg = std::atan2(e, n) * 180.0 / PI;    // atan2(E,N): 0°=N, 90°=E
     if (azDeg < 0.0) azDeg += 360.0;
 

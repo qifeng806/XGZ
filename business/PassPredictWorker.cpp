@@ -15,8 +15,31 @@ PassPredictWorker::PassPredictWorker(QObject *parent)
 
 void PassPredictWorker::run(Job job)
 {
+    runJobs({job});
+}
+
+void PassPredictWorker::runJobs(const QVector<Job> &jobs)
+{
     // 注意: worker 每次任务新建且仅 run 一次，不得在此复位 m_cancelled ——
     // 否则"启动前已被 cancel() 置位"的取消请求会被冲掉（取消失效竞态）
+    for (const auto &job : jobs) {
+        if (m_cancelled) break;   // 取消: 剩余切片任务不再执行（调用方已放弃等待）
+        try {
+            runOneJob(job);
+        } catch (const std::exception &e) {
+            // 防御: 子线程未捕获异常会导致 std::terminate 整个进程
+            emit errorOccurred(QString("卫星 %1 计算异常: %2")
+                .arg(job.tleLine0.isEmpty() ? job.tleLine1.left(10) : job.tleLine0)
+                .arg(QString::fromUtf8(e.what())));
+        } catch (...) {
+            emit errorOccurred(QString("卫星 %1 计算异常（未知错误）")
+                .arg(job.tleLine0.isEmpty() ? job.tleLine1.left(10) : job.tleLine0));
+        }
+    }
+}
+
+void PassPredictWorker::runOneJob(const Job &job)
+{
 
     // ---- Step 1: 解析 TLE（获取卫星名称和轨道信息） ----
     TleParser::ParseError parseErr;

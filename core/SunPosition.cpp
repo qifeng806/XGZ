@@ -100,8 +100,9 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
     };
 
     // ---- Step 10: 赤道 → 地平（观测站） ----
-    // 时角使用 UT1 修正后的 GMST（输入为 UTC，内部加 ΔT）
-    double gmstRad = CoordTransform::gmstRadUtc(jdUtc);
+    // 时角用 UT1 时标的 GMST；UT1 ≈ UTC（≤ 0.9s），直接用 UTC 儒略日，
+    // 不再加 ΔT（ΔT 仅用于上方 TT 时标的太阳历表）
+    double gmstRad = CoordTransform::gmstRad(jdUtc);
     double lha = gmstRad + obsLon - ra;  // 地方时角
     lha = wrap2Pi(lha);
 

@@ -78,7 +78,7 @@ void TstSunPosition::beijingNoonAltitudes()
         double jd = jdFromUtc(y, mo, d, 4, 14, 0);
         for (int i = 0; i < 10; ++i) {
             SunPosition s = SunPositionCalc::compute(jd, BEIJING_LAT, BEIJING_LON);
-            double lha = CoordTransform::gmstRadUtc(jd) * 180.0 / M_PI + BEIJING_LON - s.raDeg;
+            double lha = CoordTransform::gmstRad(jd) * 180.0 / M_PI + BEIJING_LON - s.raDeg;
             while (lha > 180.0) lha -= 360.0;
             while (lha < -180.0) lha += 360.0;
             jd -= lha / GMST_RATE;

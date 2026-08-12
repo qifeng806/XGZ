@@ -331,6 +331,11 @@ void MainWindow::setupConnections()
     connect(m_tleFetcher, &TleFetcher::finished, this, [this]() {
         m_onlineUpdateBtn->setEnabled(true);
         m_onlineUpdateBtn->setText("下载 TLE");
+        // 下载收尾: 恢复预报入口（若当时无计算任务在跑）
+        if (!m_cancelBtn->isEnabled()) {
+            m_predictBtn->setEnabled(true);
+            m_batchImportBtn->setEnabled(true);
+        }
     });
     connect(m_cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
     connect(m_clearBtn,   &QPushButton::clicked, this, &MainWindow::onClear);
@@ -351,8 +356,18 @@ void MainWindow::setupConnections()
             this, &MainWindow::onMetaInfo);
     connect(m_passTable, &QTableWidget::cellClicked,
             this, &MainWindow::onTableRowSelected);
+    // 键盘方向键/程序化移动也会改变当前单元格, 与鼠标点击统一处理
+    connect(m_passTable, &QTableWidget::currentCellChanged,
+            this, [this](int row, int col, int, int) {
+                onTableRowSelected(row, col);
+            });
     // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
     connect(m_visibleOnlyCheck, &QCheckBox::toggled, this, [this](bool) {
+        if (m_currentPasses.isEmpty()) return;
+        applyFilterAndRefresh();
+    });
+    // 时区切换: 无需重新计算, 重建表格时间列与表头即可（H3 修复）
+    connect(m_timezoneCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         if (m_currentPasses.isEmpty()) return;
         applyFilterAndRefresh();
     });
@@ -375,7 +390,8 @@ void MainWindow::applyFilterAndRefresh()
     populateTable(m_filteredPasses);
     m_polarPlot->setPasses(m_filteredPasses);
     m_dopplerPlot->setPasses(m_filteredPasses);
-    m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
+    // 地面标记使用任务发起时的观测站坐标（非当前输入框值, 防止结果与标记漂移）
+    m_groundTrack->setPasses(m_filteredPasses, m_taskLatDeg, m_taskLonDeg);
 
     int visCount = 0;
     for (const auto &p : m_currentPasses)
@@ -402,9 +418,15 @@ void MainWindow::onPredict()
     job.tleLine1 = tle1;
     job.tleLine2 = tle2;
 
+    // 锁定本次任务的观测站坐标（绘图地面标记使用）
+    m_taskLatDeg = m_latSpin->value();
+    m_taskLonDeg = m_lonSpin->value();
+
     m_batchMode = false;
     m_batchErrors.clear();
     m_predictBtn->setEnabled(false);
+    m_batchImportBtn->setEnabled(false);
+    m_onlineUpdateBtn->setEnabled(false);
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, 0);  // 不确定进度
@@ -439,6 +461,9 @@ void MainWindow::onOnlineUpdate()
     if (groupId.isEmpty()) return;
     m_onlineUpdateBtn->setEnabled(false);
     m_onlineUpdateBtn->setText("下载中…");
+    // 下载期间禁止发起预报/批量（防止任务与下载交错）
+    m_predictBtn->setEnabled(false);
+    m_batchImportBtn->setEnabled(false);
     m_statusModel->setText(QString("模型: 正在下载 %1 的 TLE…")
                            .arg(m_tleGroupCombo->currentText()));
     m_tleFetcher->fetchGroup(groupId);
@@ -495,9 +520,15 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
         return;
     }
 
+    // 批量任务共用 UI 观测站参数, 锁定本次任务坐标（绘图地面标记使用）
+    m_taskLatDeg = m_latSpin->value();
+    m_taskLonDeg = m_lonSpin->value();
+
     m_batchMode = true;
     m_batchErrors.clear();
     m_predictBtn->setEnabled(false);
+    m_batchImportBtn->setEnabled(false);
+    m_onlineUpdateBtn->setEnabled(false);
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, jobs.size());
@@ -551,6 +582,8 @@ void MainWindow::onCancel()
     m_batchMode = false;
     m_batchErrors.clear();
     m_predictBtn->setEnabled(true);
+    m_batchImportBtn->setEnabled(true);
+    m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     // 下载流程收尾（cancel() 内已 emit finished，此处为空操作保留语义清晰）
@@ -562,6 +595,13 @@ void MainWindow::onClear()
     m_tleInput2->clear();
     m_passTable->setRowCount(0);
     m_currentPasses.clear();
+    m_filteredPasses.clear();   // 过滤结果同步清空（M4: 否则内存滞留过境数据）
+    if (m_visibleOnlyCheck->isChecked()) {
+        // 复位"仅显示可见过境"勾选（阻塞信号避免空数据下的多余刷新）
+        m_visibleOnlyCheck->blockSignals(true);
+        m_visibleOnlyCheck->setChecked(false);
+        m_visibleOnlyCheck->blockSignals(false);
+    }
     m_polarPlot->clear();
     m_dopplerPlot->clear();
     m_groundTrack->clear();
@@ -592,6 +632,8 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     }
 
     m_predictBtn->setEnabled(true);
+    m_batchImportBtn->setEnabled(true);
+    m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
 }
@@ -606,6 +648,8 @@ void MainWindow::onError(QString msg)
     }
     QMessageBox::warning(this, "错误", msg);
     m_predictBtn->setEnabled(true);
+    m_batchImportBtn->setEnabled(true);
+    m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
 }
@@ -645,6 +689,21 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
     QTimeZone displayTz = (tzOffsetSec == 0)
         ? QTimeZone::UTC
         : QTimeZone(tzOffsetSec);
+
+    // 表头随所选时区动态变化（H3: 时区下拉框此前为无效控件）
+    const QString tzLabel = (tzOffsetSec == 0)
+        ? QStringLiteral("UTC")
+        : QStringLiteral("UTC%1%2")
+              .arg(tzOffsetSec > 0 ? QStringLiteral("+") : QStringLiteral("-"))
+              .arg(qAbs(tzOffsetSec) / 3600);
+    if (m_passTable->horizontalHeaderItem(2)
+        && m_passTable->horizontalHeaderItem(2)->text() != "入境(" + tzLabel + ")") {
+        m_passTable->setHorizontalHeaderLabels({
+            "#", "卫星名", "入境(" + tzLabel + ")", "出境(" + tzLabel + ")", "持续",
+            "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
+            "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
+        });
+    }
 
     auto jdMsToStr = [&displayTz](int64_t jdMs) -> QString {
         // JD×86400000 毫秒 → 1970 epoch 毫秒（纯整数运算，无舍入/精度损失）

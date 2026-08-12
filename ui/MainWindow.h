@@ -92,6 +92,10 @@ private:
     // 批量模式状态
     bool m_batchMode = false;         // 当前是否为批量预报
     QStringList m_batchErrors;        // 批量中各任务错误信息（汇总显示）
+    // 本次任务实际使用的观测站坐标（预报发起时锁定, 绘图地面标记用;
+    // 防止预报后用户改动输入框导致标记漂移与结果不一致）
+    double m_taskLatDeg = 0.0;
+    double m_taskLonDeg = 0.0;
 
     // 状态栏
     QLabel       *m_statusModel;

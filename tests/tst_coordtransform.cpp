@@ -97,12 +97,17 @@ void TstCoordTransform::deltaTAndUtcGmst()
         prev = dt;
     }
 
-    // gmstRadUtc = gmstRad(jd + ΔT/86400)，与定义严格一致
+    // 时间基准语义（H1 修复后）: gmstRad 输入为 UTC 儒略日（UT1−UTC ≤ 0.9s），
+    // ΔT（TT−UT1，2020 年代 ~69s）绝不可混入，否则恒星时系统性偏大 ~0.29°
     double jd = jdFromUtc(2024, 6, 1, 12, 0, 0);
-    double dt = CoordTransform::deltaTSeconds(jd);
-    double g1 = CoordTransform::gmstRadUtc(jd);
-    double g2 = CoordTransform::gmstRad(jd + dt / 86400.0);
-    QVERIFY(std::abs(g1 - g2) < 1e-12);
+    double gBase = CoordTransform::gmstRad(jd);
+    QVERIFY(gBase >= 0.0 && gBase < 2.0 * M_PI);
+    // UT1−UTC 最大差 0.9s → GMST 偏差 ≤ 0.9×360.985647/86400° ≈ 0.004°
+    double gUt1Tol = CoordTransform::gmstRad(jd - 0.9 / 86400.0);
+    QVERIFY(std::abs(gUt1Tol - gBase) < 0.01 * M_PI / 180.0);
+    // 若错误地按 ΔT≈69s 平移（旧 gmstRadUtc 实现），偏差 ~0.29° ≫ 0.05°（回归防护）
+    double gDtg = CoordTransform::gmstRad(jd - 69.0 / 86400.0);
+    QVERIFY(std::abs(gDtg - gBase) > 0.05 * M_PI / 180.0);
 }
 
 void TstCoordTransform::ecefGeodeticRoundTrip()

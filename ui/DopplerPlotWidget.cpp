@@ -47,7 +47,11 @@ DopplerPlotWidget::DopplerPlotWidget(QWidget *parent)
 void DopplerPlotWidget::setPasses(const QVector<PassEvent> &passes)
 {
     m_passes = passes;
-    m_selectedIndex = (passes.isEmpty()) ? -1 : 0;
+    // 保留原选中行: 过滤切换后若选中越界则钳到末尾, 而非强制回到第 0 行
+    if (passes.isEmpty())
+        m_selectedIndex = -1;
+    else if (m_selectedIndex >= passes.size())
+        m_selectedIndex = passes.size() - 1;
     update();
 }
 
@@ -98,6 +102,7 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     if (yMax - yMin < 1e-9) { yMin -= 0.5; yMax += 0.5; }
     const double yPad = (yMax - yMin) * 0.08;
     yMin -= yPad; yMax += yPad;
+    if (xMax <= 0.0) xMax = 1.0;   // 除零防护: 全部数据点 x=0 的退化曲线
     const double xPad = xMax * 0.02;
     xMax += xPad;
 

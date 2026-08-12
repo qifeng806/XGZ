@@ -34,6 +34,8 @@ public:
 
 public slots:
     void run(Job job);
+    // 批量切片: 依次执行多个任务（线程池模式，固定 worker 数消费全部任务）
+    void runJobs(const QVector<Job> &jobs);
     void cancel();
 
 signals:
@@ -44,6 +46,7 @@ signals:
 
 private:
     std::atomic<bool> m_cancelled{false};
+    void runOneJob(const Job &job);   // 单任务执行体（run/runJobs 共用）
 };
 
 #endif // BUSINESS_PASSPREDICTWORKER_H

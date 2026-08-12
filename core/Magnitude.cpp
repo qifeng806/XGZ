@@ -2,6 +2,8 @@
 // Magnitude.cpp — 星等估算实现
 // =============================================================================
 #include "Magnitude.h"
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 
 #ifndef M_PI
@@ -50,8 +52,12 @@ const StdMagEntry kCatalog[] = {
 double MagnitudeCalc::standardMagnitude(const std::string &satName, double fallback)
 {
     if (satName.empty()) return fallback;
+    // 大小写不敏感匹配（TLE 名称可能是 "starlink 1234" 等混写变体）
+    std::string upper = satName;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     for (const auto &e : kCatalog) {
-        if (satName.find(e.frag) != std::string::npos) return e.mag;
+        if (upper.find(e.frag) != std::string::npos) return e.mag;
     }
     return fallback;
 }

@@ -24,11 +24,9 @@ public:
 
     // ---- ΔT = TT − UT1（秒）----
     // Espenak & Meeus (2006) 分段多项式, 覆盖 1900~2100
-    // 用于把 UTC 儒略日修正为 UT1: jdUt1 = jdUtc + ΔT/86400
+    // 仅用于太阳/行星历表（TT 时标）: jdTT = jdUtc + ΔT/86400
+    // 注意: GMST/地球自转需要 UT1，而 UT1 ≈ UTC（≤ 0.9s），不可加 ΔT
     static double deltaTSeconds(double jdUtc);
-
-    // ---- GMST（UTC 输入，内部自动加 ΔT 修正）----
-    static double gmstRadUtc(double jdUtc);
 
     // ---- TEME(ECI) → ECEF ----
     // 绕 Z 轴旋转 +GMST 角（将惯性系旋转到与地球同步）

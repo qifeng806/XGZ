@@ -20,11 +20,8 @@ namespace {
     constexpr double EXTEND_MIN   = 60.0;      // 跨窗口过境延长搜索（分钟）
     constexpr double TCA_REFINE_SEC = 3.0;     // TCA 三分搜索初始半宽（秒）
     constexpr double SEC_PER_DAY  = 86400.0;
-
-    // UTC 儒略日 → UT1 儒略日（GMST/地固坐标旋转需要 UT1 时标）
-    inline double ut1JD(double jdUtc) {
-        return jdUtc + CoordTransform::deltaTSeconds(jdUtc) / SEC_PER_DAY;
-    }
+    // 注: 地固系旋转（GMST）用 UT1 ≈ UTC（≤ 0.9s）的儒略日即可；
+    // ΔT（TT−UT1）只用于太阳历表（SunPosition 内部自行转为 TT），切不可加到这里
 }
 
 // ========== 辅助：填充一次过境的完整详情 ==========
@@ -33,6 +30,11 @@ static void fillPassDetails(PassEvent &ev,
     const OrbitCalculator::Config &cfg,
     double jdAOS, double jdTCA, double jdLOS)
 {
+    // TCA 时刻轨道状态: 地影/星等/多普勒共用一次传播，避免重复调用 SGP4
+    std::optional<EciState> eciT;
+    if (cfg.enableShadowCheck || cfg.enableMagnitude || cfg.enableDoppler)
+        eciT = propagate(jdTCA);
+
     // 光照分析
     if (cfg.enableSunAnalysis) {
         auto sunA = SunPositionCalc::compute(jdAOS, observer.latDeg(), observer.lonDeg());
@@ -44,24 +46,23 @@ static void fillPassDetails(PassEvent &ev,
 
         if (cfg.enableShadowCheck) {
             auto eciA = propagate(jdAOS);
-            auto eciT = propagate(jdTCA);
             auto eciL = propagate(jdLOS);
             if (eciA) {
-                auto eA = CoordTransform::eciToEcef(eciA->posKm, ut1JD(jdAOS));
+                auto eA = CoordTransform::eciToEcef(eciA->posKm, jdAOS);
                 // 太阳方向必须旋转到 ECEF 与卫星位置同系
-                auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, ut1JD(jdAOS));
+                auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
                 ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
                 ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA.distanceAU);
             }
             if (eciT) {
-                auto eT = CoordTransform::eciToEcef(eciT->posKm, ut1JD(jdTCA));
-                auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, ut1JD(jdTCA));
+                auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
+                auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
                 ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
                 ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT.distanceAU);
             }
             if (eciL) {
-                auto eL = CoordTransform::eciToEcef(eciL->posKm, ut1JD(jdLOS));
-                auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, ut1JD(jdLOS));
+                auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
+                auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
                 ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
                 ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL.distanceAU);
             }
@@ -82,11 +83,10 @@ static void fillPassDetails(PassEvent &ev,
         // 星等估算: Vallerie 1963 相位模型，取 TCA 时刻（与可见性分类同一观测时刻）
         // m = m₀ − 15 + 5·log10(R) − 2.5·log10(f(B))，B = 卫星处太阳-观测者张角
         if (cfg.enableMagnitude) {
-            auto eciT2 = propagate(jdTCA);
-            if (eciT2) {
-                auto satE = CoordTransform::eciToEcef(eciT2->posKm, ut1JD(jdTCA));
+            if (eciT) {
+                auto satE = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
                 // 太阳 ECEF 位置（km）: 单位方向 × 日地距离
-                auto sunDirE = CoordTransform::eciDirToEcef(sunT.dirECI, ut1JD(jdTCA));
+                auto sunDirE = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
                 std::array<double, 3> sunPosE;
                 for (int k = 0; k < 3; ++k)
                     sunPosE[k] = sunDirE[k] * (sunT.distanceAU * EarthShadow::AU_KM);
@@ -107,7 +107,6 @@ static void fillPassDetails(PassEvent &ev,
         ev.losElRefracted = CoordTransform::applyRefraction(ev.losLook.elevDeg);
     }
     if (cfg.enableDoppler) {
-        auto eciT = propagate(jdTCA);
         if (eciT) {
             ev.dopplerAtTcaKHz = DopplerCalc::compute(
                 eciT->posKm, eciT->velKms, jdTCA,
@@ -139,7 +138,7 @@ double OrbitCalculator::elevationAt(PropagateFn &propagate,
     auto eciOpt = propagate(jd);
     if (!eciOpt) return -1000.0;  // 传播失败 → 视为不可见
 
-    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
+    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
     return obs.lookAngle(ecef).elevDeg;
 }
 
@@ -154,7 +153,7 @@ void OrbitCalculator::computeMoment(PropagateFn &propagate,
         geo  = GeoPos(0.0, 0.0, 0.0);
         return;
     }
-    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
+    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
     look = obs.lookAngle(ecef);
     geo  = obs.subSatPoint(ecef);
 }
@@ -177,7 +176,7 @@ void OrbitCalculator::collectSamples(PropagateFn &propagate,
         GeoPos    geo;
         double    dopplerKHz = 0.0;
         if (eciOpt) {
-            auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
+            auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
             look = obs.lookAngle(ecef);
             geo  = obs.subSatPoint(ecef);
             if (m_cfg.enableDoppler) {
@@ -216,8 +215,8 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
         if (sun.altDeg >= dark) return false;
         auto eciOpt = propagate(jd);
         if (!eciOpt) return false;
-        auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
-        auto sunDirE = CoordTransform::eciDirToEcef(sun.dirECI, ut1JD(jd));
+        auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
+        auto sunDirE = CoordTransform::eciDirToEcef(sun.dirECI, jd);
         return EarthShadow::umbraFactor(ecef, sunDirE, sun.distanceAU) > 0.5;
     };
 
@@ -268,12 +267,20 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     }
     if (runs.empty()) return;
 
-    // 每个 true 段的前后边界: 内部首尾采样直接取端点，否则二分精化翻转区间
-    double b0 = (runs.front().s > 0)
-        ? refineBoundary(jds[runs.front().s - 1], jds[runs.front().s])
+    // 多段时取时间跨度最长的连续段（语义: 最大连续可见子区间；
+    // 若取首段起点+末段终点，中间不可见间隙会被错误包含）
+    size_t best = 0;
+    for (size_t k = 1; k < runs.size(); ++k) {
+        if (jds[runs[k].e] - jds[runs[k].s]
+            > jds[runs[best].e] - jds[runs[best].s])
+            best = k;
+    }
+    // 该段前后边界: 内部采样直接取端点，否则二分精化翻转区间
+    double b0 = (runs[best].s > 0)
+        ? refineBoundary(jds[runs[best].s - 1], jds[runs[best].s])
         : jdAOS;
-    double b1 = (runs.back().e < static_cast<int>(jds.size()) - 1)
-        ? refineBoundary(jds[runs.back().e], jds[runs.back().e + 1])
+    double b1 = (runs[best].e < static_cast<int>(jds.size()) - 1)
+        ? refineBoundary(jds[runs[best].e], jds[runs[best].e + 1])
         : jdLOS;
 
     ev.hasVisibleArc = true;
@@ -326,7 +333,8 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
     double stepDays = m_cfg.maxElevScanStepSec / 86400.0;
     double bestJD = aosJD;
     double bestEl = -1000.0;
-    outJdMs = 0;   // 取消时保证不输出垃圾值
+    outJdMs  = 0;       // 取消时保证不输出垃圾值
+    outElDeg = -1000.0; // 取消时保证不输出垃圾值
 
     // 粗扫描
     for (double jd = aosJD; jd <= losJD; jd += stepDays) {
@@ -373,7 +381,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     // RAII: 任意退出路径（含取消提前返回）后清空成员指针，
     // 防调用方销毁 cancel 目标后对象被复用时读到悬垂指针
     struct CancelReset {
-        const std::atomic<bool> *&ref;
+        std::atomic<const std::atomic<bool> *> &ref;
         ~CancelReset() { ref = nullptr; }
     } cancelReset{m_cancel};
 
@@ -385,7 +393,32 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     double candAbove  = jdStart;   // AOS 候选：仰角 ≥ maskEl 的 JD
 
     // ---- 粗搜索 ----
-    for (double jd = jdStart; jd < jdEnd; jd += stepDays) {
+    // 末次采样推进到窗口终点（jdEnd），防窗口末尾一个粗搜步长内的 AOS 漏检;
+    // 对完全落在相邻两采样点之间的短过境做中点探测
+    auto assemblePass = [&](double jdAOS, double jdLOS) -> bool {
+        double durSec = (jdLOS - jdAOS) * 86400.0;
+        if (durSec < m_cfg.minDurationSec) return false;
+        PassEvent ev;
+        computeMoment(propagate, observer, jdAOS, ev.aosLook, ev.aosSatGeo);
+        ev.aosJdMs = jdToIntMs(jdAOS);
+        // TCA（findTCA 内部取消时输出已知哨兵值，这里再检查一次取消）
+        findTCA(propagate, observer, jdAOS, jdLOS,
+                ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
+        if (cancelled()) return false;
+        computeMoment(propagate, observer, jdLOS, ev.losLook, ev.losSatGeo);
+        ev.losJdMs = jdToIntMs(jdLOS);
+        ev.durationSec = durSec;
+        collectSamples(propagate, observer, jdAOS, jdLOS, ev);
+        ev.satelliteName = m_satName;
+        fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
+                        intMsToJd(ev.tcaJdMs), jdLOS);
+        collectVisibleArc(propagate, observer, jdAOS,
+                          intMsToJd(ev.losJdMs), ev);
+        passes.push_back(ev);
+        return true;
+    };
+
+    for (double jd = jdStart;; jd += stepDays) {
         if (cancelled()) return passes;   // 协作式取消
 
         double el = elevationAt(propagate, observer, jd);
@@ -396,58 +429,26 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                 inPass = true;
                 candBelow = jd - stepDays;
                 candAbove = jd;
+            } else if (prevEl < maskEl && jd - stepDays >= jdStart) {
+                // 步内短过境探测: 相邻两次采样之间 AOS/LOS 均出现（中点高于掩星角）
+                double jdMid = jd - 0.5 * stepDays;
+                if (elevationAt(propagate, observer, jdMid) >= maskEl) {
+                    assemblePass(
+                        bisectAOS(propagate, observer, jd - stepDays, jdMid),
+                        bisectLOS(propagate, observer, jdMid, jd));
+                }
             }
         } else {
             // 检测 LOS ▼
             if (prevEl >= maskEl && el < maskEl) {
-                // ---- 精化 AOS/LOS ----
                 double jdAOS = bisectAOS(propagate, observer, candBelow, jd);
                 double jdLOS = bisectLOS(propagate, observer, candAbove, jd);
-
-                // 过滤短过境
-                double durSec = (jdLOS - jdAOS) * 86400.0;
-                if (durSec < m_cfg.minDurationSec) {
-                    inPass = false;
-                    prevEl = el;
-                    continue;
-                }
-
-                // 组装 PassEvent
-                PassEvent ev;
-
-                // AOS 时刻详情
-                computeMoment(propagate, observer, jdAOS, ev.aosLook, ev.aosSatGeo);
-                ev.aosJdMs = jdToIntMs(jdAOS);
-
-                // TCA
-                findTCA(propagate, observer, jdAOS, jdLOS,
-                        ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
-
-                // LOS 时刻详情
-                computeMoment(propagate, observer, jdLOS, ev.losLook, ev.losSatGeo);
-                ev.losJdMs = jdToIntMs(jdLOS);
-
-                ev.durationSec = durSec;
-
-                // 弧段采样（真实轨迹，供绘图/导出）
-                collectSamples(propagate, observer, jdAOS, jdLOS, ev);
-
-                // 卫星名称
-                ev.satelliteName = m_satName;
-
-                // 填充光照/折射/多普勒/类型/质量
-                fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
-                                intMsToJd(ev.tcaJdMs), jdLOS);
-
-                // 可见弧段子区间（扫描网格强制包含 TCA，与可见性分类一致）
-                collectVisibleArc(propagate, observer, jdAOS,
-                                  intMsToJd(ev.losJdMs), ev);
-
-                passes.push_back(ev);
+                assemblePass(jdAOS, jdLOS);
                 inPass = false;
             }
         }
         prevEl = el;
+        if (jd >= jdEnd) break;
     }
 
     // ---- 跨 24h 边界处理 ----
@@ -472,23 +473,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             jdLos = jdExtend;
 
         double jdAOS = bisectAOS(propagate, observer, candBelow, jdLos);
-        double durSec = (jdLos - jdAOS) * 86400.0;
-        if (durSec >= m_cfg.minDurationSec) {
-            PassEvent ev;
-            computeMoment(propagate, observer, jdAOS, ev.aosLook, ev.aosSatGeo);
-            ev.aosJdMs = jdToIntMs(jdAOS);
-            findTCA(propagate, observer, jdAOS, jdLos,
-                    ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
-            computeMoment(propagate, observer, jdLos, ev.losLook, ev.losSatGeo);
-            ev.losJdMs = jdToIntMs(jdLos);
-            ev.durationSec = durSec;
-            collectSamples(propagate, observer, jdAOS, jdLos, ev);
-            ev.satelliteName = m_satName;
-            fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
-                            intMsToJd(ev.tcaJdMs), jdLos);
-            collectVisibleArc(propagate, observer, jdAOS, jdLos, ev);
-            passes.push_back(ev);
-        }
+        assemblePass(jdAOS, jdLos);
     }
 
     // ---- 合并相邻过境 ----

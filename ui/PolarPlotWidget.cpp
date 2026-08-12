@@ -23,7 +23,11 @@ PolarPlotWidget::PolarPlotWidget(QWidget *parent)
 void PolarPlotWidget::setPasses(const QVector<PassEvent> &passes)
 {
     m_passes = passes;
-    m_selectedIndex = (passes.isEmpty()) ? -1 : 0;
+    // 保留原选中行: 过滤切换后若选中越界则钳到末尾, 而非强制回到第 0 行
+    if (passes.isEmpty())
+        m_selectedIndex = -1;
+    else if (m_selectedIndex >= passes.size())
+        m_selectedIndex = passes.size() - 1;
     update();
 }
 

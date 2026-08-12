@@ -52,10 +52,14 @@ public:
 
 private:
     Config m_cfg;
-    mutable std::string m_satName;                     // 卫星名称
-    mutable const std::atomic<bool> *m_cancel = nullptr; // 协作式取消标志
+    mutable std::string m_satName;                      // 卫星名称
+    // 原子指针: 同一实例并发 predict 时取消标志的写入/复位无数据竞争
+    mutable std::atomic<const std::atomic<bool> *> m_cancel{nullptr};
 
-    bool cancelled() const { return m_cancel && m_cancel->load(); }
+    bool cancelled() const {
+        const std::atomic<bool> *p = m_cancel.load();
+        return p && p->load();
+    }
 
     double elevationAt(PropagateFn &propagate,
                        const Observer &obs, double jd) const;

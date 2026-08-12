@@ -47,6 +47,7 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
     connect(thread, &QThread::started, worker, [worker, job]() {
         worker->run(job);
     });
+    // QThread::start 返回 void: 线程创建失败时 Qt 内部致命退出，不会静默失败
     thread->start();
 }
 
@@ -64,7 +65,17 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
     m_batchTotal = jobs.size();
     const int seq = ++m_batchSeq;   // 本批次序号: 迟到的旧批次信号在此校验丢弃
 
-    for (int i = 0; i < m_batchTotal; ++i) {
+    // 固定大小 worker 池（H2 修复）: 逐颗建线程在 starlink/active 等大组
+    // （数千颗）下会耗尽线程资源并静默挂死。每个 worker 顺序消费一个切片。
+    const int maxWorkers   = qBound(1, QThread::idealThreadCount() * 2, 16);
+    const int workerCount  = qMin(maxWorkers, m_batchTotal);
+
+    for (int w = 0; w < workerCount; ++w) {
+        // 任务轮转均分: worker w 处理下标 w, w+workerCount, ... 的任务
+        QVector<PassPredictWorker::Job> slice;
+        for (int i = w; i < m_batchTotal; i += workerCount)
+            slice.append(jobs[i]);
+
         auto *thread = new QThread(this);
         auto *worker = new PassPredictWorker;
         worker->moveToThread(thread);
@@ -97,9 +108,10 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
 
         m_activeJobs.append({thread, worker});
 
-        connect(thread, &QThread::started, worker, [worker, job = jobs[i]]() {
-            worker->run(job);
+        connect(thread, &QThread::started, worker, [worker, slice]() {
+            worker->runJobs(slice);
         });
+        // QThread::start 返回 void: 线程创建失败时 Qt 内部致命退出，不会静默失败
         thread->start();
     }
 }
@@ -119,6 +131,9 @@ void PassPredictorService::finishBatch()
 
 void PassPredictorService::cancelAll()
 {
+    // 递增批次序号: 取消后本批次迟到的结果/错误信号一律丢弃，
+    // 杜绝"取消后结果又冒出来"的竞态（M5）
+    ++m_batchSeq;
     for (auto &aj : m_activeJobs) {
         if (aj.worker) {
             aj.worker->cancel();   // 协作式取消，线程会快速自然退出
@@ -159,9 +174,18 @@ void PassPredictorService::cleanupAll(int waitTimeoutMs)
 {
     // 先取消，给线程时间自然退出
     cancelAll();
-    // 清理所有 job
+    // 全局截止时间（M7）: 避免逐线程串行等待在任务多时总时长 N×timeout。
+    // 所有线程共享同一剩余时间预算，超时后后续线程仅试探性等待（立即返回）。
+    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + waitTimeoutMs;
     for (auto &aj : m_activeJobs) {
-        cleanupJob(aj, waitTimeoutMs);
+        int remaining = waitTimeoutMs;
+        if (waitTimeoutMs > 0) {
+            remaining = static_cast<int>(
+                deadline - QDateTime::currentMSecsSinceEpoch());
+            if (remaining <= 0)
+                remaining = 0;   // 已超时: 仅试探性等待（wait(0) 立即返回）
+        }
+        cleanupJob(aj, remaining);
     }
     m_activeJobs.clear();
 }
