@@ -39,6 +39,8 @@ public slots:
 signals:
     void resultReady(QVector<PassEvent> passes);
     void errorOccurred(QString message);
+    // TLE 元信息: 传播模型 / 历元(UTC 字符串) / 数据龄期(天)
+    void metaInfo(QString model, QString epochUtc, double ageDays);
 
 private:
     std::atomic<bool> m_cancelled{false};

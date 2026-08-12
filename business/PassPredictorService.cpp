@@ -38,6 +38,8 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
             this, &PassPredictorService::resultReady);
     connect(worker, &PassPredictWorker::errorOccurred,
             this, &PassPredictorService::errorOccurred);
+    connect(worker, &PassPredictWorker::metaInfo,
+            this, &PassPredictorService::metaInfo);
 
     m_activeJobs.append({thread, worker});
 
@@ -90,6 +92,8 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         connect(worker, &PassPredictWorker::resultReady, thread, &QThread::quit);
         connect(worker, &PassPredictWorker::errorOccurred, thread, &QThread::quit);
         connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+        connect(worker, &PassPredictWorker::metaInfo,
+                this, &PassPredictorService::metaInfo);
 
         m_activeJobs.append({thread, worker});
 

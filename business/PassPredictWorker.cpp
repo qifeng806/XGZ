@@ -1,12 +1,13 @@
 // =============================================================================
 // PassPredictWorker.cpp — Worker 实现（集成 perturb 库版本）
 // =============================================================================
-#include "PassPredictWorker.h"
+#include "business/PassPredictWorker.h"
 #include "core/TleParser.h"
 #include "core/Propagator.h"
 #include "core/CoordTransform.h"
 #include "core/Observer.h"
 #include "core/OrbitCalculator.h"
+#include <QTimeZone>
 #include <cmath>
 
 PassPredictWorker::PassPredictWorker(QObject *parent)
@@ -48,6 +49,23 @@ void PassPredictWorker::run(Job job)
 
     const auto &tle = *tleOpt;
 
+    // ---- Step 1.5: 上报 TLE 元信息（模型/历元/龄期，供 UI 展示与过期警告） ----
+    QString modelStr;
+    switch (tle.ephemerisType) {
+    case Sgp4Type::LEO_SGP4:    modelStr = "SGP4"; break;
+    case Sgp4Type::MEO_SDP4:    modelStr = "SDP4"; break;
+    case Sgp4Type::GEO_SDP4_DS: modelStr = "SDP4(DS)"; break;
+    }
+    // 历元 = 年首 + (epochDay − 1) 天（epochDay 含小数，UTC 时标）
+    const qint64 epochMs = QDateTime(QDate(tle.epochYear, 1, 1), QTime(0, 0), QTimeZone::UTC)
+        .toMSecsSinceEpoch() + static_cast<qint64>((tle.epochDay - 1.0) * 86400000.0 + 0.5);
+    double ageDays = (job.startUtc.toMSecsSinceEpoch() - epochMs) / 86400000.0;
+    if (ageDays < 0.0) ageDays = 0.0;   // 未来历元（时钟/数据异常）按 0 处理
+    emit metaInfo(modelStr,
+                  QDateTime::fromMSecsSinceEpoch(epochMs, QTimeZone::UTC)
+                      .toString("yyyy-MM-dd HH:mm:ss 'UTC'"),
+                  ageDays);
+
     // ---- Step 2: 初始化 Propagator（封装 perturb::Satellite） ----
     Propagator prop;
     std::string errMsg;
@@ -85,13 +103,7 @@ void PassPredictWorker::run(Job job)
     if (m_cancelled) return;
 
     // ---- Step 6: 更新状态栏信息（通过信号传递） ----
-    // 将模型信息附加到第一条过境的卫星名称中
-    QString modelStr;
-    switch (tle.ephemerisType) {
-    case Sgp4Type::LEO_SGP4:    modelStr = "SGP4"; break;
-    case Sgp4Type::MEO_SDP4:    modelStr = "SDP4"; break;
-    case Sgp4Type::GEO_SDP4_DS: modelStr = "SDP4(DS)"; break;
-    }
+    // 将模型信息附加到第一条过境的卫星名称中（modelStr 已在 Step 1.5 计算）
     if (!passes.empty() && !modelStr.isEmpty()) {
         std::string suffix = " [" + modelStr.toStdString() + "]";
         // 只在卫星名称不含模型信息时才追加

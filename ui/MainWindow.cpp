@@ -233,8 +233,10 @@ void MainWindow::setupUI()
 // ---- 状态栏 ----
     auto *statusLayout = new QHBoxLayout;
     m_statusModel = new QLabel("模型: —");
+    m_statusEpoch = new QLabel("历元: —");
     m_statusCount = new QLabel("过境: 0");
     statusLayout->addWidget(m_statusModel);
+    statusLayout->addWidget(m_statusEpoch);
     statusLayout->addWidget(m_statusCount);
     statusLayout->addStretch();
     mainLayout->addLayout(statusLayout);
@@ -301,6 +303,8 @@ void MainWindow::setupConnections()
                 m_progressBar->setRange(0, total);
                 m_progressBar->setValue(completed);
             });
+    connect(m_service, &PassPredictorService::metaInfo,
+            this, &MainWindow::onMetaInfo);
     connect(m_passTable, &QTableWidget::cellClicked,
             this, &MainWindow::onTableRowSelected);
     // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
@@ -359,6 +363,8 @@ void MainWindow::onPredict()
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, 0);  // 不确定进度
+    m_statusEpoch->setText("历元: —");
+    m_statusEpoch->setStyleSheet(QString());
 
     m_service->startJob(job);
 }
@@ -512,6 +518,8 @@ void MainWindow::onClear()
     m_polarPlot->clear();
     m_groundTrack->clear();
     m_statusModel->setText("模型: —");
+    m_statusEpoch->setText("历元: —");
+    m_statusEpoch->setStyleSheet(QString());
     m_statusCount->setText("过境: 0");
 }
 
@@ -552,6 +560,19 @@ void MainWindow::onError(QString msg)
     m_predictBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+}
+
+void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
+{
+    // 批量模式由汇总文本统一展示，跳过逐星元信息
+    if (m_batchMode) return;
+    m_statusModel->setText(QString("模型: %1").arg(model));
+    // 行业惯例: TLE 龄期 > 14 天预报误差可达数 10 秒，需醒目提示
+    const bool stale = ageDays > 14.0;
+    m_statusEpoch->setText(QString("历元: %1（%2 天）%3")
+        .arg(epochUtc).arg(ageDays, 0, 'f', 1)
+        .arg(stale ? " [数据过期]" : ""));
+    m_statusEpoch->setStyleSheet(stale ? "color:#d04040;" : QString());
 }
 
 void MainWindow::onTableRowSelected(int row, int col)

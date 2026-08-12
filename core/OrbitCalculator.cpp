@@ -67,9 +67,10 @@ static void fillPassDetails(PassEvent &ev,
         }
 
         double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
-        // 光照充足: 三个关键时刻中任一处太阳圆面可见比例 > 50%
-        double bestIllum = std::max({ev.aosIllum, ev.tcaIllum, ev.losIllum});
-        bool satLit = bestIllum > 0.5;
+        // 光照判定以 TCA（用户实际观测时刻）为准 —— 与 Heavens-Above/Orbis
+        // 的「峰值点燃亮」语义一致：仅 AOS/LOS 照亮、TCA 却在地影内的过境
+        // 不标为可见（否则用户按 TCA 时刻观测看不到卫星）
+        bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra) && ev.tcaIllum > 0.5;
         if (bestSunAlt < cfg.darkSkyThresholdDeg && satLit)
             ev.visibility = PassVisibility::Visible;
         else if (bestSunAlt < cfg.darkSkyThresholdDeg)

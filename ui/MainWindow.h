@@ -47,6 +47,7 @@ private slots:
     void onResultsReady(QVector<PassEvent> passes);
     void onError(QString msg);
     void onTableRowSelected(int row, int col);
+    void onMetaInfo(QString model, QString epochUtc, double ageDays);
 
 private:
     void setupUI();
@@ -92,6 +93,7 @@ private:
 
     // 状态栏
     QLabel       *m_statusModel;
+    QLabel       *m_statusEpoch;
     QLabel       *m_statusCount;
     QProgressBar *m_progressBar;
 

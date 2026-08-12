@@ -36,6 +36,7 @@ signals:
     void resultReady(QVector<PassEvent> passes);
     void errorOccurred(QString message);
     void batchProgress(int completed, int total);
+    void metaInfo(QString model, QString epochUtc, double ageDays);
 
 private:
     struct ActiveJob {
