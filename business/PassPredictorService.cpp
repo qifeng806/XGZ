@@ -137,8 +137,9 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
             : aj.thread->wait();
         if (!exited) {
             // 超时: 线程仍在运行（极端情况）。放弃等待，让线程在后台
-            // 自然后退；不 deleteLater（running 中析构会告警），
-            // 对象随进程退出回收。
+            // 自然后退。解除父子关系防止析构时 delete 正在运行的
+            // QThread（未定义行为）；不再 deleteLater，对象随进程退出回收。
+            aj.thread->setParent(nullptr);
             aj.thread = nullptr;
             aj.worker = nullptr;
             return false;

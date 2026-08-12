@@ -54,13 +54,19 @@ void TleFetcher::fetchSatellite(int catnorID)
 
 void TleFetcher::cancel()
 {
-    m_cancelled = true;
-    if (m_reply) m_reply->abort();
+    // 仅在存在活动请求时置取消标志: 无请求时置位会让下一次正常下载
+    // 被 onReplyFinished 的静默分支误吞（数据丢弃且不弹框）
+    if (m_reply) {
+        m_cancelled = true;
+        m_reply->abort();
+    }
     emit finished();
 }
 
 void TleFetcher::startRequest(const QUrl &url, const QString &tag)
 {
+    // 新请求开始即解除历史取消状态（防残留标志吞掉本次正常结果）
+    m_cancelled = false;
     if (m_reply) m_reply->deleteLater();   // 并发保护: 丢弃旧请求
 
     QNetworkRequest req(url);

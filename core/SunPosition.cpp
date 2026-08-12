@@ -4,6 +4,7 @@
 #include "SunPosition.h"
 #include "CoordTransform.h"
 #include "Nutation.h"
+#include <algorithm>
 #include <cmath>
 
 #ifndef M_PI
@@ -77,7 +78,7 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
     double cosEps    = std::cos(eps);
 
     double sinDec = sinEps * sinLambda;
-    double cosDec = std::sqrt(1.0 - sinDec * sinDec);  // Dec 在 ±23.5° 内，正值
+    double cosDec = std::sqrt(std::max(0.0, 1.0 - sinDec * sinDec));  // Dec 在 ±23.5° 内，正值
     double dec    = std::atan2(sinDec, cosDec);
 
     double sinRA  = sinLambda * cosEps;  // 符号同 sinLambda

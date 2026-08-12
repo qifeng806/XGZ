@@ -703,8 +703,12 @@ void MainWindow::onExportCSV()
             if (f >= 1.0)      return "100%";
             return QString("%1%").arg(static_cast<int>(f * 100.0));
         };
+        // CSV 字段转义: 卫星名可能含逗号/引号/换行，按 RFC 4180 包裹引号
+        auto csvField = [](const QString &s) -> QString {
+            return "\"" + QString(s).replace('"', "\"\"") + "\"";
+        };
         out << (i + 1) << ","
-            << QString::fromStdString(p.satelliteName) << ","
+            << csvField(QString::fromStdString(p.satelliteName)) << ","
             << jdToStr(p.aosJdMs) << ","
             << jdToStr(p.losJdMs) << ","
             << p.durationSec << ","
@@ -736,6 +740,10 @@ void MainWindow::onExportKML()
         "KML Files (*.kml)");
     if (filePath.isEmpty()) return;
 
+    // KML 是 XML：卫星名可能含 & < > 等特殊字符，必须转义
+    //（名称来自 TLE 名称行或用户粘贴文本，不可信）
+    auto xmlEsc = [](const QString &s) { return s.toHtmlEscaped(); };
+
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
@@ -759,7 +767,7 @@ void MainWindow::onExportKML()
         const auto &p = m_filteredPasses[i];
         out << "<Placemark>\n"
             << "<name>Pass " << (i + 1) << ": "
-            << QString::fromStdString(p.satelliteName) << " "
+            << xmlEsc(QString::fromStdString(p.satelliteName)) << " "
             << p.maxElevDeg << "°</name>\n"
             << "<description>Duration: " << p.durationSec << "s</description>\n"
             << "<LineString><coordinates>";
