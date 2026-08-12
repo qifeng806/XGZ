@@ -295,10 +295,14 @@ double CoordTransform::applyRefraction(double elGeomDeg)
 {
     // Bennett 公式在负仰角下不适用（tan 会变号）
     if (elGeomDeg < 0.0) return elGeomDeg;
+    // 极高仰角（近天顶）时 Bennett 公式分子趋 0 甚至变负，
+    // 折射修正物理上必然非负 → 直接返回原值（L-3 修复）
+    if (elGeomDeg >= 88.0) return elGeomDeg;
 
     // Bennett 1982: R(弧分) = 1 / tan(h + 7.31/(h + 4.4))
     // h = 仰角（度）
     double hRad = deg2rad(elGeomDeg + 7.31 / (elGeomDeg + 4.4));
     double R_arcmin = 1.0 / std::tan(hRad);
+    if (R_arcmin < 0.0) R_arcmin = 0.0;   // 防御: 数值误差导致的负值钳制为 0
     return elGeomDeg + R_arcmin / 60.0;  // 弧分 → 度
 }

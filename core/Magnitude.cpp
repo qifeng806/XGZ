@@ -57,7 +57,15 @@ double MagnitudeCalc::standardMagnitude(const std::string &satName, double fallb
     std::transform(upper.begin(), upper.end(), upper.begin(),
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     for (const auto &e : kCatalog) {
-        if (upper.find(e.frag) != std::string::npos) return e.mag;
+        size_t pos = upper.find(e.frag);
+        while (pos != std::string::npos) {
+            // 词边界匹配: 前缀不能是字母/数字，避免 "XGPS"/"LOGOES" 误命中
+            bool atWordStart =
+                (pos == 0) ||
+                !std::isalnum(static_cast<unsigned char>(upper[pos - 1]));
+            if (atWordStart) return e.mag;
+            pos = upper.find(e.frag, pos + 1);
+        }
     }
     return fallback;
 }

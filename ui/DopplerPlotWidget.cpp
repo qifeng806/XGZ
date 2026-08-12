@@ -77,14 +77,14 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(30, 30, 30));
+    painter.fillRect(rect(), QColor(38, 42, 54));
 
     // 收集含数据曲线的过境
     QVector<int> curveIdx;   // m_passes 中的下标
     for (int i = 0; i < m_passes.size(); ++i)
         if (hasDopplerData(m_passes[i])) curveIdx.append(i);
     if (curveIdx.isEmpty()) {
-        painter.setPen(QColor(140, 140, 140));
+        painter.setPen(QColor(175, 182, 195));
         painter.drawText(rect(), Qt::AlignCenter, "无多普勒数据\n（载频为零或采样未启用）");
         return;
     }
@@ -115,35 +115,35 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     };
 
     // 网格与坐标轴
-    painter.setPen(QPen(QColor(80, 80, 80), 1));
+    painter.setPen(QPen(QColor(105, 113, 130), 1));
     const int yTicks = 5;
     for (int t = 0; t <= yTicks; ++t) {
         double y = yMin + (yMax - yMin) * t / yTicks;
         double sy = mapY(y);
         painter.drawLine(QPointF(plotArea.left(), sy), QPointF(plotArea.right(), sy));
-        painter.setPen(QColor(160, 160, 160));
+        painter.setPen(QColor(195, 202, 215));
         painter.drawText(QRectF(0, sy - 8, plotArea.left() - 5, 16),
                          Qt::AlignRight | Qt::AlignVCenter,
                          QString::number(y, 'f', 1));
-        painter.setPen(QPen(QColor(80, 80, 80), 1));
+        painter.setPen(QPen(QColor(105, 113, 130), 1));
     }
     const int xTicks = 5;
     for (int t = 0; t <= xTicks; ++t) {
         double x = xMax * t / xTicks;
         double sx = mapX(x);
         painter.drawLine(QPointF(sx, plotArea.top()), QPointF(sx, plotArea.bottom()));
-        painter.setPen(QColor(160, 160, 160));
+        painter.setPen(QColor(195, 202, 215));
         painter.drawText(QRectF(sx - 25, plotArea.bottom() + 6, 50, 16),
                          Qt::AlignCenter, QString::number(x, 'f', 0));
-        painter.setPen(QPen(QColor(80, 80, 80), 1));
+        painter.setPen(QPen(QColor(105, 113, 130), 1));
     }
-    painter.setPen(QColor(200, 200, 200));
+    painter.setPen(QColor(215, 222, 235));
     painter.drawText(QRectF(plotArea.left(), 2, plotArea.width(), 14),
                      Qt::AlignHCenter, "多普勒频移（kHz，相对过境入境时刻）");
 
     // 零频参考线（中心频率 → 多普勒偏移 0）
     if (yMin < 0.0 && yMax > 0.0) {
-        painter.setPen(QPen(QColor(255, 255, 255, 60), 1, Qt::DashLine));
+        painter.setPen(QPen(QColor(255, 255, 255, 90), 1, Qt::DashLine));
         painter.drawLine(QPointF(plotArea.left(), mapY(0.0)),
                          QPointF(plotArea.right(), mapY(0.0)));
     }
@@ -155,12 +155,12 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
         const bool isSel = (idx == m_selectedIndex);
         QColor col = kPalette[curveIdx.indexOf(idx) % (sizeof(kPalette) / sizeof(kPalette[0]))];
         if (hasSel && !isSel) {
-            col.setAlpha(70);
-            painter.setPen(QPen(col, 1.2));
+            col.setAlpha(150);
+            painter.setPen(QPen(col, 1.5));
         } else if (isSel) {
-            painter.setPen(QPen(QColor(255, 255, 255), 2.4));
+            painter.setPen(QPen(QColor(255, 255, 255), 2.6));
         } else {
-            painter.setPen(QPen(col, 1.6));
+            painter.setPen(QPen(col, 1.8));
         }
 
         const auto pts = curvePoints(m_passes[idx]);

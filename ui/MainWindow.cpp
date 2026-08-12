@@ -90,6 +90,27 @@ private:
     QPlainTextEdit *m_edit;
 };
 
+// 表头悬浮提示（M3 修复: setHorizontalHeaderLabels 会重建表头项并丢弃
+// 已有 tooltip, 故每次重建表头后必须重新应用, 否则提示永久丢失）
+void applyHeaderTips(QTableWidget *table)
+{
+    const QStringList headerTips = {
+        QString(), QString(), QString(), QString(),
+        "过境持续时长", "几何仰角（悬浮显示大气折射后的视仰角）",
+        "TCA 时刻方位角", "光学可见 / 仅无线电 / 白天",
+        "TCA 时刻太阳高度角", "TCA 时刻卫星日照状态（半影带为太阳圆面可见比例）",
+        "几何过境内「暗天 + 被照亮」的连续可见时段",
+        "入境时刻卫星星下点经纬度与高度",
+        "TCA 时刻观测者至卫星斜距", "TCA 时刻多普勒频移",
+        "视星等估算（Vallerie 相位模型），越小越亮",
+        "综合质量评级"
+    };
+    for (int c = 0; c < headerTips.size(); ++c) {
+        if (!headerTips[c].isEmpty() && table->horizontalHeaderItem(c))
+            table->horizontalHeaderItem(c)->setToolTip(headerTips[c]);
+    }
+}
+
 } // namespace
 
 // ============================================================================
@@ -99,6 +120,8 @@ void MainWindow::setupUI()
 {
     setWindowTitle("XGZ — 卫星 TLE 过境预报系统");
     resize(1280, 800);
+    // 保证顶部状态栏三项文字完整展示（不被挤占截断）所需的最小宽度
+    setMinimumWidth(1080);
 
     auto *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
@@ -244,9 +267,18 @@ void MainWindow::setupUI()
 
 // ---- 状态栏 ----
     auto *statusLayout = new QHBoxLayout;
+    statusLayout->setSpacing(28);
     m_statusModel = new QLabel("模型: —");
     m_statusEpoch = new QLabel("历元: —");
     m_statusCount = new QLabel("过境: 0");
+    // 状态标签永不压缩（内容完整展示, 不互相挤占截断）;
+    // 超长时可悬停查看全文（setStatusText 同步 tooltip）
+    for (QLabel *lbl : {static_cast<QLabel *>(m_statusModel),
+                        static_cast<QLabel *>(m_statusEpoch),
+                        static_cast<QLabel *>(m_statusCount)}) {
+        lbl->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+        lbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    }
     statusLayout->addWidget(m_statusModel);
     statusLayout->addWidget(m_statusEpoch);
     statusLayout->addWidget(m_statusCount);
@@ -277,22 +309,9 @@ void MainWindow::setupUI()
         m_passTable->setColumnWidth(c, colWidths[c]);
     m_passTable->horizontalHeader()->setMinimumSectionSize(45);
 
-    // 表头提示（悬浮说明列语义）
-    const QStringList headerTips = {
-        QString(), QString(), QString(), QString(),
-        "过境持续时长", "几何仰角（悬浮显示大气折射后的视仰角）",
-        "TCA 时刻方位角", "光学可见 / 仅无线电 / 白天",
-        "TCA 时刻太阳高度角", "TCA 时刻卫星日照状态（半影带为太阳圆面可见比例）",
-        "几何过境内「暗天 + 被照亮」的连续可见时段",
-        "入境时刻卫星星下点经纬度与高度",
-        "TCA 时刻观测者至卫星斜距", "TCA 时刻多普勒频移",
-        "视星等估算（Vallerie 相位模型），越小越亮",
-        "综合质量评级"
-    };
-    for (int c = 0; c < 16; ++c) {
-        if (!headerTips[c].isEmpty() && m_passTable->horizontalHeaderItem(c))
-            m_passTable->horizontalHeaderItem(c)->setToolTip(headerTips[c]);
-    }
+    // 表头提示（悬浮说明列语义）——由辅助函数维护，
+    // 表头重建（setHorizontalHeaderLabels）后须重新应用（M3）
+    applyHeaderTips(m_passTable);
     m_passTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_passTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_passTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -396,8 +415,19 @@ void MainWindow::applyFilterAndRefresh()
     int visCount = 0;
     for (const auto &p : m_currentPasses)
         if (p.visibility == PassVisibility::Visible) ++visCount;
-    m_statusCount->setText(QString("过境: %1 (可见: %2)")
+    setStatusText(m_statusCount, QString("过境: %1 (可见: %2)")
         .arg(m_currentPasses.size()).arg(visCount));
+
+    // 选中同步（L4）: 图表以第 0 行为准，表格无选中时同步到第 0 行
+    //（有选中则保留用户选择, 不越权跳行）
+    if (m_passTable->rowCount() > 0 && m_passTable->currentRow() < 0)
+        m_passTable->setCurrentCell(0, 0);
+}
+
+void MainWindow::setStatusText(QLabel *label, const QString &text)
+{
+    label->setText(text);
+    label->setToolTip(text);   // 文本超长时悬停查看完整内容
 }
 
 // ============================================================================
@@ -430,7 +460,7 @@ void MainWindow::onPredict()
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, 0);  // 不确定进度
-    m_statusEpoch->setText("历元: —");
+    setStatusText(m_statusEpoch, "历元: —");
     m_statusEpoch->setStyleSheet(QString());
 
     m_service->startJob(job);
@@ -464,8 +494,8 @@ void MainWindow::onOnlineUpdate()
     // 下载期间禁止发起预报/批量（防止任务与下载交错）
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
-    m_statusModel->setText(QString("模型: 正在下载 %1 的 TLE…")
-                           .arg(m_tleGroupCombo->currentText()));
+    setStatusText(m_statusModel, QString("模型: 正在下载 %1 的 TLE…")
+                  .arg(m_tleGroupCombo->currentText()));
     m_tleFetcher->fetchGroup(groupId);
 }
 
@@ -481,7 +511,7 @@ void MainWindow::onTleDownloaded(QString rawText, QString groupId)
                 .arg(groupId));
         return;
     }
-    m_statusModel->setText(QString("模型: 已下载 %1 颗卫星的 TLE").arg(blocks.size()));
+    setStatusText(m_statusModel, QString("模型: 已下载 %1 颗卫星的 TLE").arg(blocks.size()));
 
     BatchTleDialog dlg(this);
     dlg.setWindowTitle(QString("批量导入 — 在线下载 (%1 颗)").arg(blocks.size()));
@@ -533,9 +563,9 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, jobs.size());
     m_progressBar->setValue(0);
-    m_statusModel->setText(QString("模型: 批量 %1 颗").arg(jobs.size()));
+    setStatusText(m_statusModel, QString("模型: 批量 %1 颗").arg(jobs.size()));
     if (failed > 0)
-        m_statusModel->setText(
+        setStatusText(m_statusModel,
             QString("模型: 批量 %1 颗（%2 颗解析失败跳过）")
                 .arg(jobs.size()).arg(failed));
 
@@ -544,7 +574,7 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
 
 void MainWindow::onTleError(QString message)
 {
-    m_statusModel->setText("模型: TLE 下载失败");
+    setStatusText(m_statusModel, "模型: TLE 下载失败");
     QMessageBox::warning(this, "在线更新失败", message);
 }
 
@@ -591,6 +621,13 @@ void MainWindow::onCancel()
 
 void MainWindow::onClear()
 {
+    // M4 修复: 清空视图的同时终止在途计算, 防止迟到的结果覆盖刚清空的界面
+    //（cancelAll 递增序号, 迟到信号被服务层序号守卫丢弃; TLE 下载一并中止）
+    m_service->cancelAll();
+    m_tleFetcher->cancel();
+    m_batchMode = false;
+    m_batchErrors.clear();
+
     m_tleInput1->clear();
     m_tleInput2->clear();
     m_passTable->setRowCount(0);
@@ -605,10 +642,15 @@ void MainWindow::onClear()
     m_polarPlot->clear();
     m_dopplerPlot->clear();
     m_groundTrack->clear();
-    m_statusModel->setText("模型: —");
-    m_statusEpoch->setText("历元: —");
+    setStatusText(m_statusModel, "模型: —");
+    setStatusText(m_statusEpoch, "历元: —");
     m_statusEpoch->setStyleSheet(QString());
-    m_statusCount->setText("过境: 0");
+    setStatusText(m_statusCount, "过境: 0");
+    m_predictBtn->setEnabled(true);
+    m_batchImportBtn->setEnabled(true);
+    m_onlineUpdateBtn->setEnabled(true);
+    m_cancelBtn->setEnabled(false);
+    m_progressBar->setVisible(false);
 }
 
 // ============================================================================
@@ -643,7 +685,8 @@ void MainWindow::onError(QString msg)
     if (m_batchMode) {
         // 批量模式: 不弹阻塞对话框，累计到结果时统一汇总
         m_batchErrors << msg;
-        m_statusModel->setText(QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
+        setStatusText(m_statusModel,
+                      QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
         return;
     }
     QMessageBox::warning(this, "错误", msg);
@@ -658,10 +701,10 @@ void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
 {
     // 批量模式由汇总文本统一展示，跳过逐星元信息
     if (m_batchMode) return;
-    m_statusModel->setText(QString("模型: %1").arg(model));
+    setStatusText(m_statusModel, QString("模型: %1").arg(model));
     // 行业惯例: TLE 龄期 > 14 天预报误差可达数 10 秒，需醒目提示
     const bool stale = ageDays > 14.0;
-    m_statusEpoch->setText(QString("历元: %1（%2 天）%3")
+    setStatusText(m_statusEpoch, QString("历元: %1（%2 天）%3")
         .arg(epochUtc).arg(ageDays, 0, 'f', 1)
         .arg(stale ? " [数据过期]" : ""));
     m_statusEpoch->setStyleSheet(stale ? "color:#d04040;" : QString());
@@ -703,6 +746,7 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
             "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
             "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
         });
+        applyHeaderTips(m_passTable);   // 表头重建后重应用悬浮提示（M3）
     }
 
     auto jdMsToStr = [&displayTz](int64_t jdMs) -> QString {

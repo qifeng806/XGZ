@@ -18,10 +18,11 @@ PassPredictorService::~PassPredictorService()
 
 void PassPredictorService::startJob(const PassPredictWorker::Job &job)
 {
-    cleanupAll();
+    cleanupAll(2000);
 
     // 单星任务不走批量汇总; 递增序号使在途批量任务的迟到信号全部失效
-    ++m_batchSeq;
+    // （cleanupAll→cancelAll 已递增一次，此处唯一确定本任务取到的序号）
+    const int seq = ++m_batchSeq;
 
     auto *thread = new QThread(this);
     auto *worker = new PassPredictWorker;
@@ -33,13 +34,23 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
     connect(worker, &PassPredictWorker::errorOccurred, thread, &QThread::quit);
     // 线程结束 → 清理 worker
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
-    // 转发信号
-    connect(worker, &PassPredictWorker::resultReady,
-            this, &PassPredictorService::resultReady);
-    connect(worker, &PassPredictWorker::errorOccurred,
-            this, &PassPredictorService::errorOccurred);
-    connect(worker, &PassPredictWorker::metaInfo,
-            this, &PassPredictorService::metaInfo);
+    // 转发信号（metaInfo 同样带序号守卫: 取消/换任务后迟到元信息一律丢弃,
+    // 防止状态栏显示已淘汰任务的模型与历元）
+    connect(worker, &PassPredictWorker::resultReady, this,
+            [this, seq](QVector<PassEvent> passes) {
+                if (seq != m_batchSeq) return;
+                emit resultReady(passes);
+            });
+    connect(worker, &PassPredictWorker::errorOccurred, this,
+            [this, seq](QString msg) {
+                if (seq != m_batchSeq) return;
+                emit errorOccurred(msg);
+            });
+    connect(worker, &PassPredictWorker::metaInfo, this,
+            [this, seq](QString model, QString epochUtc, double ageDays) {
+                if (seq != m_batchSeq) return;
+                emit metaInfo(model, epochUtc, ageDays);
+            });
 
     m_activeJobs.append({thread, worker});
 
@@ -53,7 +64,7 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
 
 void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &jobs)
 {
-    cleanupAll();
+    cleanupAll(2000);
 
     if (jobs.isEmpty()) {
         emit errorOccurred("无有效 TLE");
@@ -103,8 +114,11 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         connect(worker, &PassPredictWorker::resultReady, thread, &QThread::quit);
         connect(worker, &PassPredictWorker::errorOccurred, thread, &QThread::quit);
         connect(thread, &QThread::finished, worker, &QObject::deleteLater);
-        connect(worker, &PassPredictWorker::metaInfo,
-                this, &PassPredictorService::metaInfo);
+        connect(worker, &PassPredictWorker::metaInfo, this,
+                [this, seq](QString model, QString epochUtc, double ageDays) {
+                    if (seq != m_batchSeq) return;
+                    emit metaInfo(model, epochUtc, ageDays);
+                });
 
         m_activeJobs.append({thread, worker});
 

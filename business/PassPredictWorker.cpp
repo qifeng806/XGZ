@@ -60,10 +60,12 @@ void PassPredictWorker::runOneJob(const Job &job)
         switch (parseErr.code) {
         case TleParser::ParseError::BAD_LENGTH:     msg = "TLE 行长度不足"; break;
         case TleParser::ParseError::BAD_LINE_NUMBER: msg = "行号前缀错误"; break;
+        case TleParser::ParseError::CHECKSUM_FAILED: msg = "校验和错误"; break;
         case TleParser::ParseError::BAD_NORAD:       msg = "无效的 NORAD 编号"; break;
         case TleParser::ParseError::BAD_EPOCH:       msg = "无效的历元格式"; break;
         case TleParser::ParseError::BAD_ELEMENTS:    msg = "轨道根数越界"; break;
         case TleParser::ParseError::BAD_BS:          msg = "B* 格式错误"; break;
+        case TleParser::ParseError::DECAYED:         msg = "卫星已再入（已失效）"; break;
         default:                                     msg = "未知解析错误"; break;
         }
         emit errorOccurred(msg);

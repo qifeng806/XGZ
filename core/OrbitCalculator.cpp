@@ -267,13 +267,24 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     }
     if (runs.empty()) return;
 
-    // 多段时取时间跨度最长的连续段（语义: 最大连续可见子区间；
-    // 若取首段起点+末段终点，中间不可见间隙会被错误包含）
-    size_t best = 0;
-    for (size_t k = 1; k < runs.size(); ++k) {
-        if (jds[runs[k].e] - jds[runs[k].s]
-            > jds[runs[best].e] - jds[runs[best].s])
+    // 多段时优先取包含 TCA 的连续段（M-1: 可见弧段与可见性分类同以 TCA
+    // 时刻为准，避免"弧段未含 TCA"与"标为可见"互相矛盾）；
+    // 仅当 TCA 不在任何可见段内（理论矛盾，防御）时退化为取最长段
+    size_t best = runs.size();
+    const double tcaJd = intMsToJd(ev.tcaJdMs);
+    for (size_t k = 0; k < runs.size(); ++k) {
+        if (jds[runs[k].s] <= tcaJd && tcaJd <= jds[runs[k].e]) {
             best = k;
+            break;
+        }
+    }
+    if (best == runs.size()) {
+        best = 0;
+        for (size_t k = 1; k < runs.size(); ++k) {
+            if (jds[runs[k].e] - jds[runs[k].s]
+                > jds[runs[best].e] - jds[runs[best].s])
+                best = k;
+        }
     }
     // 该段前后边界: 内部采样直接取端点，否则二分精化翻转区间
     double b0 = (runs[best].s > 0)
@@ -405,6 +416,9 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         findTCA(propagate, observer, jdAOS, jdLOS,
                 ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
         if (cancelled()) return false;
+        // 防御: 精化峰值仍低于掩星角（数值异常/传播抖动）时整段丢弃，
+        // 防止 findTCA 抖出 -1000 级别的垃圾过境（L-1）
+        if (ev.maxElevDeg < maskEl) return false;
         computeMoment(propagate, observer, jdLOS, ev.losLook, ev.losSatGeo);
         ev.losJdMs = jdToIntMs(jdLOS);
         ev.durationSec = durSec;
@@ -506,12 +520,6 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                         merged.back().visAosJdMs = passes[i].visAosJdMs;
                         merged.back().visLosJdMs = passes[i].visLosJdMs;
                     }
-                    // 弧段采样: 追加后半段的点（保持时间单调，跳过重叠区）
-                    auto &dst = merged.back().samples;
-                    const int64_t lastT = dst.empty() ? std::numeric_limits<int64_t>::min()
-                                                      : dst.back().jdMs;
-                    for (const auto &s : passes[i].samples)
-                        if (s.jdMs > lastT) dst.push_back(s);
                 }
                 // 取较高的最大仰角
                 if (passes[i].maxElevDeg > merged.back().maxElevDeg) {
@@ -527,9 +535,28 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().magAtTca = passes[i].magAtTca;
                     merged.back().magValid = passes[i].magValid;
                 }
+                // L-2 修复: 弧段采样合并（无论 TCA 取自哪一段都执行），
+                // 追加后半段的点并保持时间单调、跳过重叠区——保证 TCA 峰值
+                // 处的采样点不会从星表中消失
+                auto &dst = merged.back().samples;
+                const int64_t lastT = dst.empty() ? std::numeric_limits<int64_t>::min()
+                                                  : dst.back().jdMs;
+                for (const auto &s : passes[i].samples)
+                    if (s.jdMs > lastT) dst.push_back(s);
             } else {
                 merged.push_back(std::move(passes[i]));
             }
+        }
+        // M-2 修复: 合并可能抬高 maxElevDeg / 替换 TCA（连同 azDiff 一起变动），
+        // 质量等级与过境类型须按最终字段重算（公式与 fillPassDetails 保持一致）
+        for (auto &ev : merged) {
+            if (ev.maxElevDeg >= 50.0)      ev.quality = PassQuality::Excellent;
+            else if (ev.maxElevDeg >= 20.0) ev.quality = PassQuality::Good;
+            else                            ev.quality = PassQuality::Poor;
+            double azDiff = ev.tcaLook.azDeg - ev.aosLook.azDeg;
+            if (azDiff > 180.0) azDiff -= 360.0;
+            if (azDiff < -180.0) azDiff += 360.0;
+            ev.passType = (azDiff > 0.0) ? 0 : 1;
         }
         passes = std::move(merged);
     }

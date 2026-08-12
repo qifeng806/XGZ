@@ -60,6 +60,8 @@ private:
     void startBatchFromBlocks(const QVector<TleBlock> &blocks, const QString &origin);
     // 按"仅显示可见过境"开关过滤 m_currentPasses → m_filteredPasses 并刷新全部视图
     void applyFilterAndRefresh();
+    // 状态栏标签: 同步文本与悬浮提示（文本过长时完整内容可悬停查看）
+    void setStatusText(QLabel *label, const QString &text);
     QVector<PassEvent> m_currentPasses;    // 原始全部过境
     QVector<PassEvent> m_filteredPasses;   // 过滤后（导出用）
 

@@ -105,11 +105,11 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
     double sx = plotW / 360.0;   // 经度 → 像素
     double sy = plotH / 180.0;   // 纬度 → 像素
 
-    // 背景
-    painter.fillRect(rect(), QColor(25, 30, 40));
+    // 背景（亮色系, 保证深色轨迹清晰可见）
+    painter.fillRect(rect(), QColor(30, 36, 50));
 
     // 网格线（每 30°）
-    painter.setPen(QPen(QColor(50, 55, 65), 1));
+    painter.setPen(QPen(QColor(95, 105, 125), 1));
     for (int lat = -90; lat <= 90; lat += 30) {
         double y = y0 + (90.0 - lat) * sy;
         painter.drawLine(QPointF(x0, y), QPointF(x0 + plotW, y));
@@ -120,14 +120,14 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
     }
 
     // 赤道加粗
-    painter.setPen(QPen(QColor(70, 75, 85), 2));
+    painter.setPen(QPen(QColor(140, 150, 170), 2));
     {
         double yEq = y0 + 90.0 * sy;
         painter.drawLine(QPointF(x0, yEq), QPointF(x0 + plotW, yEq));
     }
 
     // 经纬度标签
-    painter.setPen(QColor(140, 140, 140));
+    painter.setPen(QColor(190, 198, 212));
     QFont labelFont = painter.font();
     labelFont.setPointSize(8);
     painter.setFont(labelFont);
@@ -142,8 +142,8 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
 
     // 真实大陆轮廓（Natural Earth 110m，qrc 资源加载）
     // 先于过境轨迹绘制，保证轨迹线不被大陆遮挡
-    painter.setPen(QPen(QColor(60, 65, 75), 1));
-    painter.setBrush(QColor(35, 40, 50));
+    painter.setPen(QPen(QColor(120, 130, 148), 1));
+    painter.setBrush(QColor(58, 68, 86));
     for (const auto &poly : m_landPolygons) {
         if (poly.size() < 3) continue;
         QPolygonF screen;
@@ -164,15 +164,15 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
 
     // 绘制过境地面轨迹
     QVector<QColor> trackColors = {
-        QColor(80, 180, 255), QColor(255, 160, 60),
-        QColor(100, 255, 100), QColor(255, 100, 100)
+        QColor(95, 200, 255), QColor(255, 180, 75),
+        QColor(115, 255, 125), QColor(255, 115, 115)
     };
 
     for (int pi = 0; pi < m_passes.size(); ++pi) {
         const auto &p = m_passes[pi];
         bool isSelected = (pi == m_selectedIndex);
         QColor col = trackColors[pi % trackColors.size()];
-        if (!isSelected) col.setAlpha(60);
+        if (!isSelected) col.setAlpha(160);
 
         QPainterPath trackPath;
         // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
@@ -204,17 +204,25 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
             trackPath.moveTo(aosP);
             trackPath.quadTo(tcaP, losP);
         }
-        painter.setPen(QPen(col, isSelected ? 2 : 1));
+        if (isSelected) {
+            // 选中路径光晕（先宽后窄，突出主轨迹）
+            QColor glow = col;
+            glow.setAlpha(70);
+            painter.setPen(QPen(glow, 9));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(trackPath);
+        }
+        painter.setPen(QPen(col, isSelected ? 3.5 : 1.8));
         painter.setBrush(Qt::NoBrush);
         painter.drawPath(trackPath);
 
         if (isSelected) {
-            painter.setPen(Qt::NoPen);
+            painter.setPen(QPen(QColor(15, 20, 28), 1));
             painter.setBrush(QColor(0, 255, 200));
             painter.drawEllipse(aosP, 5, 5);
             painter.setBrush(QColor(255, 255, 0));
             painter.drawEllipse(tcaP, 5, 5);
-            painter.setBrush(QColor(255, 80, 80));
+            painter.setBrush(QColor(255, 90, 90));
             painter.drawEllipse(losP, 5, 5);
 
             painter.setPen(Qt::white);
@@ -226,7 +234,7 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
 
     // 如果没有过境，显示提示
     if (m_passes.isEmpty()) {
-        painter.setPen(QColor(150, 150, 150));
+        painter.setPen(QColor(175, 182, 195));
         painter.setFont(QFont("Arial", 12));
         painter.drawText(QRectF(x0, y0, plotW, plotH),
                          Qt::AlignCenter, "暂无过境数据");
