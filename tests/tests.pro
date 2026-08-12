@@ -52,3 +52,5 @@ win32-g++ {
 win32-msvc* {
     QMAKE_CXXFLAGS += /utf-8 /MP /W3 /std:c++17
 }
+# perturb 历史遗留未使用变量/参数已用 [[maybe_unused]] 在源码标注
+#（qmake 的 Makefile 生成器不支持按源文件作用域设置编译选项）

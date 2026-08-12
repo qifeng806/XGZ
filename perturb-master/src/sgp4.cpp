@@ -2201,9 +2201,10 @@ double& rp, double& rteosq, double& sinio, double& gsto, char opsmode
     void twoline2rv
         (
         char longstr1[130], char longstr2[130],
-        char typerun, char typeinput, char opsmode,
+        char typerun, [[maybe_unused]] char typeinput, char opsmode,
         gravconsttype whichconst,
-        double& startmfe, double& stopmfe, double& deltamin,
+        [[maybe_unused]] double& startmfe, [[maybe_unused]] double& stopmfe,
+        [[maybe_unused]] double& deltamin,
         elsetrec& satrec
         )
     {
@@ -2211,8 +2212,10 @@ double& rp, double& rteosq, double& sinio, double& gsto, char opsmode
         const double xpdotp = 1440.0 / (2.0 *pi);  // 229.1831180523293
 
         double sec;
-        double startsec, stopsec, startdayofyr, stopdayofyr, jdstart, jdstop, jdstartF, jdstopF;
-        int startyear, stopyear, startmon, stopmon, startday, stopday,
+        // [XGZ] legacy batch-run variables unused in library mode:
+        // annotated [[maybe_unused]] to keep -Wall -Wextra clean
+        [[maybe_unused]] double startsec, stopsec, startdayofyr, stopdayofyr, jdstart, jdstop, jdstartF, jdstopF;
+        [[maybe_unused]] int startyear, stopyear, startmon, stopmon, startday, stopday,
             starthr, stophr, startmin, stopmin;
         int cardnumb, j;
         // sgp4fix include in satrec
