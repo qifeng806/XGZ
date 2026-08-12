@@ -6,6 +6,7 @@
 #include "SunPosition.h"
 #include "EarthShadow.h"
 #include "DopplerCalc.h"
+#include "Magnitude.h"
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -77,6 +78,28 @@ static void fillPassDetails(PassEvent &ev,
             ev.visibility = PassVisibility::RadioOnly;
         else
             ev.visibility = PassVisibility::Daylight;
+
+        // 星等估算: Vallerie 1963 相位模型，取 TCA 时刻（与可见性分类同一观测时刻）
+        // m = m₀ − 15 + 5·log10(R) − 2.5·log10(f(B))，B = 卫星处太阳-观测者张角
+        if (cfg.enableMagnitude) {
+            auto eciT2 = propagate(jdTCA);
+            if (eciT2) {
+                auto satE = CoordTransform::eciToEcef(eciT2->posKm, ut1JD(jdTCA));
+                // 太阳 ECEF 位置（km）: 单位方向 × 日地距离
+                auto sunDirE = CoordTransform::eciDirToEcef(sunT.dirECI, ut1JD(jdTCA));
+                std::array<double, 3> sunPosE;
+                for (int k = 0; k < 3; ++k)
+                    sunPosE[k] = sunDirE[k] * (sunT.distanceAU * EarthShadow::AU_KM);
+                const double phase = MagnitudeCalc::phaseAngleRad(satE, sunPosE,
+                                                                  observer.ecef());
+                ev.magAtTca = MagnitudeCalc::visualMagnitude(
+                    MagnitudeCalc::standardMagnitude(ev.satelliteName, cfg.stdMagFallback),
+                    ev.tcaLook.rangeKm, phase);
+                // 本影中卫星不可见，公式前提（太阳无遮挡）不成立 → 标为无效
+                ev.magValid = (ev.tcaSatShadow != ShadowStatus::InUmbra)
+                              && std::isfinite(ev.magAtTca);
+            }
+        }
     }
     if (cfg.enableRefraction) {
         ev.aosElRefracted = CoordTransform::applyRefraction(ev.aosLook.elevDeg);
@@ -146,13 +169,116 @@ void OrbitCalculator::collectSamples(PropagateFn &propagate,
     const double step = m_cfg.sampleStepSec / 86400.0;
     ev.samples.clear();
     ev.samples.reserve(static_cast<size_t>((jdLOS - jdAOS) / step) + 2);
+    // 传播一次完成全部字段（含多普勒），避免对同一时刻二次传播
     for (double jd = jdAOS; jd <= jdLOS + 1e-12; jd += step) {
         if (cancelled()) return;
+        auto eciOpt = propagate(jd);
         LookAngle look;
         GeoPos    geo;
-        computeMoment(propagate, obs, jd, look, geo);
-        ev.samples.push_back({ jdToIntMs(jd), look, geo });
+        double    dopplerKHz = 0.0;
+        if (eciOpt) {
+            auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
+            look = obs.lookAngle(ecef);
+            geo  = obs.subSatPoint(ecef);
+            if (m_cfg.enableDoppler) {
+                dopplerKHz = DopplerCalc::compute(eciOpt->posKm, eciOpt->velKms, jd,
+                                                  obs.ecef(), m_cfg.carrierFreqMHz);
+            }
+        } else {
+            look = LookAngle(-1000.0, 0.0, 0.0);   // 传播失败占位（与 computeMoment 一致）
+            geo  = GeoPos(0.0, 0.0, 0.0);
+        }
+        ev.samples.push_back({ jdToIntMs(jd), look, geo, dopplerKHz });
     }
+}
+
+// ========== 可见弧段子区间 ==========
+// Heavens-Above 语义: 几何过境内"地面暗天（太阳高度 < 阈值）+ 卫星被照亮
+// （太阳圆面可见比例 > 50%）"的最大连续子区间，即观测者实际能看到的时段。
+// 粗扫描定位状态翻转区间 → 二分精化边界；TCA 作为采样点强制纳入网格，
+// 保证与 TCA 时刻可见性分类（fillPassDetails）严格一致。
+void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
+                                        const Observer &obs,
+                                        double jdAOS, double jdLOS,
+                                        PassEvent &ev) const
+{
+    if (!m_cfg.enableVisArc || !m_cfg.enableSunAnalysis
+        || !m_cfg.enableShadowCheck || m_cfg.sampleStepSec <= 0.0) return;
+    if (jdLOS <= jdAOS) return;
+
+    const double step  = m_cfg.sampleStepSec / 86400.0;
+    const double dark  = m_cfg.darkSkyThresholdDeg;
+
+    // t 时刻是否"可观测": 地面暗天 且 卫星被照亮（光照圆面 > 50%）
+    auto visibleAt = [&](double jd) -> bool {
+        if (cancelled()) return false;
+        auto sun = SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
+        if (sun.altDeg >= dark) return false;
+        auto eciOpt = propagate(jd);
+        if (!eciOpt) return false;
+        auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, ut1JD(jd));
+        auto sunDirE = CoordTransform::eciDirToEcef(sun.dirECI, ut1JD(jd));
+        return EarthShadow::umbraFactor(ecef, sunDirE, sun.distanceAU) > 0.5;
+    };
+
+    // 二分精化状态翻转边界: [lo, hi] 端点可见性已知不同，收敛到区间内的翻转点。
+    // 不变式: visibleAt(lo) == A, visibleAt(hi) == B（A ≠ B），收敛到翻转位置
+    auto refineBoundary = [&](double jdLo, double jdHi) -> double {
+        for (int i = 0; i < m_cfg.bisectionIters; ++i) {
+            double mid = (jdLo + jdHi) * 0.5;
+            if (visibleAt(mid)) jdHi = mid;
+            else                jdLo = mid;
+        }
+        return (jdLo + jdHi) * 0.5;
+    };
+
+    // 采样网格: 等步长 + 强制纳入 TCA（保证相邻采样状态不同处边界精化正确，
+    // 且 TCA 时刻可见性分类与弧段包含关系严格一致）
+    std::vector<double> jds;
+    jds.push_back(jdAOS);
+    for (double jd = jdAOS + step; jd < jdLOS; jd += step) jds.push_back(jd);
+    jds.push_back(jdLOS);
+    {
+        double tca = intMsToJd(ev.tcaJdMs);
+        if (tca > jdAOS && tca < jdLOS) {
+            // 插入 TCA（若已与某采样点重合则跳过）
+            bool dup = false;
+            for (double jd : jds) {
+                if (std::abs(jd - tca) * 86400.0 < 0.5) { dup = true; break; }
+            }
+            if (!dup) {
+                jds.push_back(tca);
+                std::sort(jds.begin(), jds.end());
+            }
+        }
+    }
+
+    // 逐采样点求可见性，收集连续 true 段
+    std::vector<bool> vis(jds.size());
+    for (size_t i = 0; i < jds.size(); ++i) vis[i] = visibleAt(jds[i]);
+
+    struct Run { int s, e; };   // 闭区间 [s, e]
+    std::vector<Run> runs;
+    size_t i = 0;
+    while (i < jds.size()) {
+        if (!vis[i]) { ++i; continue; }
+        size_t s = i;
+        while (i < jds.size() && vis[i]) ++i;
+        runs.push_back({ static_cast<int>(s), static_cast<int>(i - 1) });
+    }
+    if (runs.empty()) return;
+
+    // 每个 true 段的前后边界: 内部首尾采样直接取端点，否则二分精化翻转区间
+    double b0 = (runs.front().s > 0)
+        ? refineBoundary(jds[runs.front().s - 1], jds[runs.front().s])
+        : jdAOS;
+    double b1 = (runs.back().e < static_cast<int>(jds.size()) - 1)
+        ? refineBoundary(jds[runs.back().e], jds[runs.back().e + 1])
+        : jdLOS;
+
+    ev.hasVisibleArc = true;
+    ev.visAosJdMs = jdToIntMs(b0);
+    ev.visLosJdMs = jdToIntMs(b1);
 }
 
 // ========== 二分精化 AOS ==========
@@ -313,6 +439,10 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                 fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
                                 intMsToJd(ev.tcaJdMs), jdLOS);
 
+                // 可见弧段子区间（扫描网格强制包含 TCA，与可见性分类一致）
+                collectVisibleArc(propagate, observer, jdAOS,
+                                  intMsToJd(ev.losJdMs), ev);
+
                 passes.push_back(ev);
                 inPass = false;
             }
@@ -356,6 +486,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             ev.satelliteName = m_satName;
             fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
                             intMsToJd(ev.tcaJdMs), jdLos);
+            collectVisibleArc(propagate, observer, jdAOS, jdLos, ev);
             passes.push_back(ev);
         }
     }
@@ -379,6 +510,17 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().losElRefracted = passes[i].losElRefracted;
                     merged.back().losIllum = passes[i].losIllum;
                     merged.back().durationSec = (intMsToJd(merged.back().losJdMs) - intMsToJd(merged.back().aosJdMs)) * 86400.0;
+                    // 可见弧段: 合并后取两段并集区间
+                    if (passes[i].hasVisibleArc && merged.back().hasVisibleArc) {
+                        merged.back().visAosJdMs = std::min(merged.back().visAosJdMs,
+                                                            passes[i].visAosJdMs);
+                        merged.back().visLosJdMs = std::max(merged.back().visLosJdMs,
+                                                            passes[i].visLosJdMs);
+                    } else if (passes[i].hasVisibleArc) {
+                        merged.back().hasVisibleArc = true;
+                        merged.back().visAosJdMs = passes[i].visAosJdMs;
+                        merged.back().visLosJdMs = passes[i].visLosJdMs;
+                    }
                     // 弧段采样: 追加后半段的点（保持时间单调，跳过重叠区）
                     auto &dst = merged.back().samples;
                     const int64_t lastT = dst.empty() ? std::numeric_limits<int64_t>::min()
@@ -397,6 +539,8 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().tcaIllum = passes[i].tcaIllum;
                     merged.back().tcaElRefracted = passes[i].tcaElRefracted;
                     merged.back().dopplerAtTcaKHz = passes[i].dopplerAtTcaKHz;
+                    merged.back().magAtTca = passes[i].magAtTca;
+                    merged.back().magValid = passes[i].magValid;
                 }
             } else {
                 merged.push_back(std::move(passes[i]));

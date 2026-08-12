@@ -21,6 +21,7 @@ SOURCES += \
     core/Nutation.cpp \
     core/EarthShadow.cpp \
     core/DopplerCalc.cpp \
+    core/Magnitude.cpp \
     core/OrbitCalculator.cpp \
     business/PassPredictWorker.cpp \
     business/PassPredictorService.cpp \
@@ -29,6 +30,7 @@ SOURCES += \
     ui/MainWindow.cpp \
     ui/PolarPlotWidget.cpp \
     ui/GroundTrackWidget.cpp \
+    ui/DopplerPlotWidget.cpp \
     perturb-master/src/perturb.cpp \
     perturb-master/src/sgp4.cpp \
     perturb-master/src/tle.cpp
@@ -43,6 +45,7 @@ HEADERS += \
     core/Nutation.h \
     core/EarthShadow.h \
     core/DopplerCalc.h \
+    core/Magnitude.h \
     core/OrbitCalculator.h \
     business/PassPredictWorker.h \
     business/PassPredictorService.h \
@@ -51,6 +54,7 @@ HEADERS += \
     ui/MainWindow.h \
     ui/PolarPlotWidget.h \
     ui/GroundTrackWidget.h \
+    ui/DopplerPlotWidget.h \
     perturb-master/include/perturb/perturb.hpp \
     perturb-master/include/perturb/sgp4.hpp \
     perturb-master/include/perturb/tle.hpp

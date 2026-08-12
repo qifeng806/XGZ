@@ -46,6 +46,7 @@ int main(int argc, char *argv[])
         { "earthshadow",    runTstEarthShadow },
         { "propagator",     runTstPropagator },
         { "orbitcalc",      runTstOrbitCalc },
+        { "magnitude",      runTstMagnitude },
     };
 
     int failures = 0;

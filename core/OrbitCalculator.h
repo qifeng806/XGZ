@@ -30,6 +30,9 @@ public:
         bool   enableRefraction    = true;
         bool   enableSamples       = true;   // 采集过境弧段采样点
         double sampleStepSec       = 15.0;   // 弧段采样步长（秒）
+        bool   enableMagnitude     = true;   // 星等估算（Vallerie 1963 相位模型）
+        double stdMagFallback      = 4.5;    // 无目录匹配时的固有星等（1000 km）
+        bool   enableVisArc        = true;   // 可见弧段子区间分析（Heavens-Above 语义）
         Config() = default;
     };
 
@@ -70,9 +73,15 @@ private:
     void computeMoment(PropagateFn &propagate, const Observer &obs,
                        double jd, LookAngle &look, GeoPos &geo) const;
 
-    // 在 [AOS, LOS] 内等步长采集弧段采样点（填 PassEvent::samples）
+    // 在 [AOS, LOS] 内等步长采集弧段采样点（填 PassEvent::samples，
+    // enableDoppler 时同时填充各采样点多普勒）
     void collectSamples(PropagateFn &propagate, const Observer &obs,
                         double jdAOS, double jdLOS, PassEvent &ev) const;
+
+    // 可见弧段子区间: 在 [AOS, LOS] 内扫描"暗天 + 被照亮"的最大连续区间，
+    // 边界做二分精化（填 visAosJdMs/visLosJdMs/hasVisibleArc）
+    void collectVisibleArc(PropagateFn &propagate, const Observer &obs,
+                           double jdAOS, double jdLOS, PassEvent &ev) const;
 
     static int64_t jdToIntMs(double jd);
     static double intMsToJd(int64_t ms);

@@ -130,6 +130,7 @@ struct PassSample {
     int64_t  jdMs = 0;    // 时刻（毫秒儒略日）
     LookAngle look;       // 站心观测角（仰角/方位角/斜距）
     GeoPos    geo;        // 星下点（经纬高）
+    double    dopplerKHz = 0.0;   // 该时刻多普勒频移（enableDoppler 时有效）
 };
 
 // ---------------------------------------------------------------------------
@@ -177,6 +178,16 @@ struct PassEvent {
     double aosIllum = 1.0;   // AOS 时刻卫星被太阳照亮的圆面比例
     double tcaIllum = 1.0;
     double losIllum = 1.0;
+
+    // ── 可见弧段子区间（Heavens-Above 语义: 几何过境内同时满足
+    //     "地面暗天 + 卫星被照亮" 的最大连续子区间，观测者实际可见的时间范围）
+    int64_t visAosJdMs   = 0;   // 可见弧段起点（毫秒 JD, hasVisibleArc=false 时无效）
+    int64_t visLosJdMs   = 0;   // 可见弧段终点
+    bool    hasVisibleArc = false;
+
+    // ── 星等估算（Vallerie 1963 相位模型, enableMagnitude 时有效）──
+    double magAtTca = 0.0;      // TCA 时刻视星等（越小越亮; magValid=false 时无效）
+    bool   magValid = false;    // 星等可用（卫星未处本影且几何参数有效）
 
     // 过境弧段采样（AOS→LOS 等步长采样，供极坐标/地面轨迹绘图与 KML 导出）
     std::vector<PassSample> samples;

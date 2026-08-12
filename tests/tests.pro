@@ -22,6 +22,7 @@ SOURCES += \
     tst_earthshadow.cpp \
     tst_propagator.cpp \
     tst_orbitcalc.cpp \
+    tst_magnitude.cpp \
     ../core/TleParser.cpp \
     ../core/Propagator.cpp \
     ../core/CoordTransform.cpp \
@@ -30,6 +31,7 @@ SOURCES += \
     ../core/Nutation.cpp \
     ../core/EarthShadow.cpp \
     ../core/DopplerCalc.cpp \
+    ../core/Magnitude.cpp \
     ../core/OrbitCalculator.cpp \
     ../business/TleBlocks.cpp \
     ../perturb-master/src/perturb.cpp \

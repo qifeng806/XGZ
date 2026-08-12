@@ -79,6 +79,8 @@ private slots:
     void cooperativeCancellation();
     void mergeAndMinDuration();
     void samplesCoverPass();
+    void visibleArcConsistentWithVisibility();
+    void magnitudeEstimateSanity();
 };
 
 void TstOrbitCalc::predictFindsPasses()
@@ -330,6 +332,58 @@ void TstOrbitCalc::samplesCoverPass()
     auto passes2 = calcNo.predict(keplerFn(90.0), obs, JD0, 24.0);
     QVERIFY(!passes2.empty());
     for (const auto &p : passes2) QVERIFY(p.samples.empty());
+}
+
+// 可见弧段子区间与 TCA 时刻可见性分类的一致性
+void TstOrbitCalc::visibleArcConsistentWithVisibility()
+{
+    Observer obs(60.0, 0.0, 0.0, 10.0);
+    OrbitCalculator calc;
+    calc.setSatelliteName("SYNTH-LEO");
+    auto passes = calc.predict(keplerFn(90.0), obs, JD0, 24.0);
+    QVERIFY(!passes.empty());
+
+    for (const auto &ev : passes) {
+        // 区间有效性（有弧段时）
+        if (ev.hasVisibleArc) {
+            QVERIFY(ev.visAosJdMs <= ev.visLosJdMs);
+            QVERIFY(ev.visAosJdMs >= ev.aosJdMs);
+            QVERIFY(ev.visLosJdMs <= ev.losJdMs);
+        }
+        // 可见性分类 = 可见 ⇒ 弧段必存在且包含 TCA
+        //（分类以 TCA 时刻判定; 弧段扫描网格强制纳入 TCA，两者判据一致）
+        if (ev.visibility == PassVisibility::Visible) {
+            QVERIFY2(ev.hasVisibleArc, "可见过境必须存在可见弧段");
+            QVERIFY(ev.visAosJdMs <= ev.tcaJdMs);
+            QVERIFY(ev.tcaJdMs <= ev.visLosJdMs);
+        }
+    }
+}
+
+// 星等估算数值健全性
+void TstOrbitCalc::magnitudeEstimateSanity()
+{
+    Observer obs(60.0, 0.0, 0.0, 10.0);
+    OrbitCalculator calc;
+    calc.setSatelliteName("ISS");   // 触发内置星等目录匹配
+    auto passes = calc.predict(keplerFn(90.0), obs, JD0, 24.0);
+    QVERIFY(!passes.empty());
+
+    for (const auto &ev : passes) {
+        if (ev.tcaSatShadow != ShadowStatus::InUmbra) {
+            // 非本影: 星等必须有效、有限、数值合理
+            QVERIFY2(ev.magValid, "非本影过境星等应有效");
+            QVERIFY(std::isfinite(ev.magAtTca));
+            QVERIFY(ev.magAtTca > -10.0 && ev.magAtTca < 20.0);
+        } else {
+            // 本影中公式前提不成立 → 标为无效
+            QVERIFY(!ev.magValid);
+        }
+        // 采样点多普勒字段恒为有限值（enableDoppler=false 时为 0）
+        for (const auto &s : ev.samples) {
+            QVERIFY(std::isfinite(s.dopplerKHz));
+        }
+    }
 }
 
 int runTstOrbitCalc(int argc, char *argv[])

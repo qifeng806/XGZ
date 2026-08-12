@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 #include "PolarPlotWidget.h"
 #include "GroundTrackWidget.h"
+#include "DopplerPlotWidget.h"
 #include "business/TleBlocks.h"
 #include "core/TleParser.h"
 #include "core/CoordTransform.h"
@@ -190,6 +191,17 @@ void MainWindow::setupUI()
     m_startTimeEdit->setTimeZone(QTimeZone::UTC);
     inputLayout->addWidget(m_startTimeEdit, 5, 1, 1, 3);
 
+    inputLayout->addWidget(new QLabel("固有星等:"), 5, 4);
+    m_stdMagSpin = new QDoubleSpinBox;
+    m_stdMagSpin->setRange(0.0, 20.0);
+    m_stdMagSpin->setValue(4.5);
+    m_stdMagSpin->setDecimals(1);
+    m_stdMagSpin->setToolTip(
+        "卫星固有星等（1000 km、满相位，越小越亮）\n"
+        "内置星等目录含 ISS/天宫/哈勃等常见亮星；\n"
+        "未匹配目录的卫星使用此值估算视星等");
+    inputLayout->addWidget(m_stdMagSpin, 5, 5);
+
     // 在线更新行
     inputLayout->addWidget(new QLabel("在线更新:"), 6, 0);
     m_tleGroupCombo = new QComboBox;
@@ -246,11 +258,11 @@ void MainWindow::setupUI()
 
     // 页签 1: 过境列表
     m_passTable = new QTableWidget;
-    m_passTable->setColumnCount(14);
+    m_passTable->setColumnCount(16);
     m_passTable->setHorizontalHeaderLabels({
         "#", "卫星名", "入境(UTC)", "出境(UTC)", "持续",
         "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
-        "入境位置", "斜距", "多普勒", "质量"
+        "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
     });
     m_passTable->horizontalHeader()->setStretchLastSection(true);
     m_passTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -264,7 +276,11 @@ void MainWindow::setupUI()
     m_polarPlot = new PolarPlotWidget;
     m_tabWidget->addTab(m_polarPlot, "极坐标图");
 
-    // 页签 3: 地面轨迹图
+    // 页签 3: 多普勒曲线
+    m_dopplerPlot = new DopplerPlotWidget;
+    m_tabWidget->addTab(m_dopplerPlot, "多普勒曲线");
+
+    // 页签 4: 地面轨迹图
     m_groundTrack = new GroundTrackWidget;
     m_tabWidget->addTab(m_groundTrack, "地面轨迹");
 
@@ -330,6 +346,7 @@ void MainWindow::applyFilterAndRefresh()
     }
     populateTable(m_filteredPasses);
     m_polarPlot->setPasses(m_filteredPasses);
+    m_dopplerPlot->setPasses(m_filteredPasses);
     m_groundTrack->setPasses(m_filteredPasses, m_latSpin->value(), m_lonSpin->value());
 
     int visCount = 0;
@@ -492,6 +509,8 @@ void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
     job.calcCfg.enableRefraction   = true;
     job.calcCfg.enableDoppler      = true;
     job.calcCfg.carrierFreqMHz     = m_freqSpin->value();
+    job.calcCfg.enableMagnitude    = true;
+    job.calcCfg.stdMagFallback     = m_stdMagSpin->value();
     job.calcCfg.darkSkyThresholdDeg = m_darkSkyCombo->currentData().toDouble();
 }
 
@@ -516,6 +535,7 @@ void MainWindow::onClear()
     m_passTable->setRowCount(0);
     m_currentPasses.clear();
     m_polarPlot->clear();
+    m_dopplerPlot->clear();
     m_groundTrack->clear();
     m_statusModel->setText("模型: —");
     m_statusEpoch->setText("历元: —");
@@ -580,6 +600,7 @@ void MainWindow::onTableRowSelected(int row, int col)
     Q_UNUSED(col);
     if (row >= 0 && row < m_passTable->rowCount()) {
         m_polarPlot->setSelectedPass(row);
+        m_dopplerPlot->setSelectedPass(row);
         m_groundTrack->setSelectedPass(row);
     }
 }
@@ -655,13 +676,36 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         }
         setCell(9, litText);
 
-        setCell(10, QString("%1°, %2°, %3km")
+        // 可见弧段子区间（Heavens-Above 语义: 该时段内实际可见）
+        if (p.hasVisibleArc) {
+            auto *arcTip = new QTableWidgetItem(
+                jdMsToStr(p.visAosJdMs) + " – " + jdMsToStr(p.visLosJdMs));
+            arcTip->setToolTip(
+                "几何过境内「暗天 + 被照亮」的连续时段，观测者实际可见范围");
+            m_passTable->setItem(r, 10, arcTip);
+        } else {
+            setCell(10, "—");
+        }
+
+        setCell(11, QString("%1°, %2°, %3km")
             .arg(p.aosSatGeo.latDeg, 0, 'f', 1)
             .arg(p.aosSatGeo.lonDeg, 0, 'f', 1)
             .arg(p.aosSatGeo.altKm, 0, 'f', 0));
 
-        setCell(11, QString::number(p.tcaLook.rangeKm, 'f', 0) + " km");
-        setCell(12, QString::number(p.dopplerAtTcaKHz, 'f', 2) + " kHz");
+        setCell(12, QString::number(p.tcaLook.rangeKm, 'f', 0) + " km");
+        setCell(13, QString::number(p.dopplerAtTcaKHz, 'f', 2) + " kHz");
+
+        // 星等估算（越小越亮; TCA 时刻）
+        if (p.magValid) {
+            auto *magItem = new QTableWidgetItem(
+                QString::number(p.magAtTca, 'f', 1));
+            magItem->setToolTip(
+                "视星等估算（Vallerie 相位模型），越小越亮\n"
+                "固有星等来自内置目录或输入框回退值，误差 ±1~2 星等");
+            m_passTable->setItem(r, 14, magItem);
+        } else {
+            setCell(14, "—");
+        }
 
         QString qualityText;
         switch (p.quality) {
@@ -669,7 +713,7 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         case PassQuality::Good:      qualityText = "★★";  break;
         case PassQuality::Poor:      qualityText = "★";   break;
         }
-        setCell(13, qualityText);
+        setCell(15, qualityText);
 
         // 最大仰角颜色
         auto *elItem = m_passTable->item(r, 5);
@@ -705,8 +749,9 @@ void MainWindow::onExportCSV()
 
     // 表头
     out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),折射仰角(°),方位角(°),"
-           "可见性,太阳高度(°),卫星光照,入境纬度(°),入境经度(°),入境高度(km),"
-           "斜距(km),多普勒(kHz),质量,AOS光照,TCA光照,LOS光照\n";
+           "可见性,太阳高度(°),卫星光照,可见弧段起点(UTC),可见弧段终点(UTC),"
+           "入境纬度(°),入境经度(°),入境高度(km),"
+           "斜距(km),多普勒(kHz),星等,质量,AOS光照,TCA光照,LOS光照\n";
 
     for (int i = 0; i < m_filteredPasses.size(); ++i) {
         const auto &p = m_filteredPasses[i];
@@ -740,11 +785,14 @@ void MainWindow::onExportCSV()
             << p.tcaSunAlt << ","
             << ((p.tcaSatShadow == ShadowStatus::FullSunlight) ? "日照" :
                 (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "本影") << ","
+            << (p.hasVisibleArc ? jdToStr(p.visAosJdMs) : "") << ","
+            << (p.hasVisibleArc ? jdToStr(p.visLosJdMs) : "") << ","
             << p.aosSatGeo.latDeg << ","
             << p.aosSatGeo.lonDeg << ","
             << p.aosSatGeo.altKm << ","
             << p.tcaLook.rangeKm << ","
             << p.dopplerAtTcaKHz << ","
+            << (p.magValid ? QString::number(p.magAtTca, 'f', 1) : "") << ","
             << ((p.quality == PassQuality::Excellent) ? "优秀" :
                 (p.quality == PassQuality::Good) ? "良好" : "一般") << ","
             << illumStr(p.aosIllum) << ","
@@ -786,11 +834,24 @@ void MainWindow::onExportKML()
 
     for (int i = 0; i < m_filteredPasses.size(); ++i) {
         const auto &p = m_filteredPasses[i];
+        QString desc = QString("Duration: %1 s; Max elev: %2°")
+            .arg(p.durationSec).arg(p.maxElevDeg, 0, 'f', 1);
+        if (p.hasVisibleArc) {
+            desc += QString("; Visible: %1 – %2")
+                .arg(QDateTime::fromMSecsSinceEpoch(p.visAosJdMs - 210866760000000LL,
+                                                    QTimeZone::UTC)
+                         .toString("HH:mm:ss"))
+                .arg(QDateTime::fromMSecsSinceEpoch(p.visLosJdMs - 210866760000000LL,
+                                                    QTimeZone::UTC)
+                         .toString("HH:mm:ss"));
+        }
+        if (p.magValid)
+            desc += QString("; Mag: %1").arg(p.magAtTca, 0, 'f', 1);
         out << "<Placemark>\n"
             << "<name>Pass " << (i + 1) << ": "
             << xmlEsc(QString::fromStdString(p.satelliteName)) << " "
             << p.maxElevDeg << "°</name>\n"
-            << "<description>Duration: " << p.durationSec << "s</description>\n"
+            << "<description>" << xmlEsc(desc) << "</description>\n"
             << "<LineString><coordinates>";
         // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点
         if (p.samples.size() >= 2) {
@@ -837,6 +898,13 @@ void MainWindow::onExportJSON()
         obj["aosAltKm"]    = p.aosSatGeo.altKm;
         obj["aosAzDeg"]    = p.aosLook.azDeg;
         obj["aosRangeKm"]  = p.aosLook.rangeKm;
+        obj["hasVisibleArc"] = p.hasVisibleArc;
+        if (p.hasVisibleArc) {
+            obj["visAosJdMs"] = static_cast<qint64>(p.visAosJdMs);
+            obj["visLosJdMs"] = static_cast<qint64>(p.visLosJdMs);
+        }
+        obj["magValid"] = p.magValid;
+        if (p.magValid) obj["magAtTca"] = p.magAtTca;
         arr.append(obj);
     }
     QJsonDocument doc(arr);

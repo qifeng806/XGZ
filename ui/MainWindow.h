@@ -25,6 +25,7 @@
 QT_BEGIN_NAMESPACE
 class PolarPlotWidget;
 class GroundTrackWidget;
+class DopplerPlotWidget;
 QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow {
@@ -74,6 +75,7 @@ private:
     QComboBox       *m_darkSkyCombo;
     QComboBox       *m_tleGroupCombo;
     QDoubleSpinBox  *m_freqSpin;
+    QDoubleSpinBox  *m_stdMagSpin;   // 固有星等（1000 km）: 无目录匹配时回退值
     QCheckBox       *m_visibleOnlyCheck;
     QDateTimeEdit   *m_startTimeEdit;
 
@@ -102,6 +104,7 @@ private:
     QTableWidget *m_passTable;
     PolarPlotWidget  *m_polarPlot;
     GroundTrackWidget *m_groundTrack;
+    DopplerPlotWidget *m_dopplerPlot;
 
     // 业务层
     PassPredictorService *m_service;
