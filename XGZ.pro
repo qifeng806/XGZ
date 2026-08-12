@@ -62,6 +62,15 @@ HEADERS += \
 # ---- Include Paths ----
 INCLUDEPATH += . core business ui perturb-master/include
 
+# ---- 输出目录固定为基于 $$PWD 的绝对路径 ----
+# 保证无论从哪个目录执行 qmake/make（常见误操作: 在 release/ 子目录里构建），
+# moc 中间文件、目标文件与可执行文件都落到 D:\AAAAAAAAA\XGZ\release\ 下，
+# 且 `#include "MainWindow.moc"` 通过绝对 -I 路径解析，不再依赖相对目录
+DESTDIR     = $$PWD/release
+OBJECTS_DIR = $$PWD/release/obj
+MOC_DIR     = $$PWD/release/moc
+INCLUDEPATH += $$PWD/release/moc
+
 # ---- Compiler Flags ----
 win32-g++ {
     QMAKE_CXXFLAGS += -Wall -Wextra -std=c++17
