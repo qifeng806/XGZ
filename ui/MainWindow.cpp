@@ -406,6 +406,10 @@ void MainWindow::applyFilterAndRefresh()
     } else {
         m_filteredPasses = m_currentPasses;
     }
+    // 刷新前保存选中行（setRowCount 会清空当前单元格, 事后恢复,
+    // 过滤/时区切换/重新计算结果刷新时保留用户选择, 越界则钳到第 0 行）
+    const int prevRow = (m_passTable->rowCount() > 0)
+        ? m_passTable->currentRow() : -1;
     populateTable(m_filteredPasses);
     m_polarPlot->setPasses(m_filteredPasses);
     m_dopplerPlot->setPasses(m_filteredPasses);
@@ -418,10 +422,12 @@ void MainWindow::applyFilterAndRefresh()
     setStatusText(m_statusCount, QString("过境: %1 (可见: %2)")
         .arg(m_currentPasses.size()).arg(visCount));
 
-    // 选中同步（L4）: 图表以第 0 行为准，表格无选中时同步到第 0 行
-    //（有选中则保留用户选择, 不越权跳行）
-    if (m_passTable->rowCount() > 0 && m_passTable->currentRow() < 0)
-        m_passTable->setCurrentCell(0, 0);
+    // 恢复选中: 优先保留用户原选择, 越界/无选中时钳到第 0 行
+    if (m_passTable->rowCount() > 0) {
+        const int row = (prevRow >= 0 && prevRow < m_passTable->rowCount())
+            ? prevRow : 0;
+        m_passTable->setCurrentCell(row, 0);
+    }
 }
 
 void MainWindow::setStatusText(QLabel *label, const QString &text)
@@ -605,12 +611,17 @@ void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
 
 void MainWindow::onCancel()
 {
-    // 清除全部计算线程（内部先协作式取消，毫秒级退出）
-    m_service->cleanupAll();
+    // 清除全部计算线程（内部先协作式取消，毫秒级退出；
+    // 2000ms 全局截止防极端情况下无限阻塞 UI）
+    m_service->cleanupAll(2000);
     // 中止在途的在线 TLE 下载（无活动请求时静默无效）
     m_tleFetcher->cancel();
     m_batchMode = false;
     m_batchErrors.clear();
+    // 复位状态栏: 取消后不再显示已淘汰任务的模型/历元信息
+    setStatusText(m_statusModel, "模型: —");
+    setStatusText(m_statusEpoch, "历元: —");
+    m_statusEpoch->setStyleSheet(QString());
     m_predictBtn->setEnabled(true);
     m_batchImportBtn->setEnabled(true);
     m_onlineUpdateBtn->setEnabled(true);
@@ -899,6 +910,8 @@ void MainWindow::onExportCSV()
     QTextStream out(&file);
     out.setEncoding(QStringConverter::Utf8);
     out.setGenerateByteOrderMark(true);
+    out.setLocale(QLocale::c());   // 修复: 默认跟随系统 locale, 逗号小数点的
+                                   // 区域设置下 CSV 数字会被破坏为 "40,5"
 
     // 表头
     out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),折射仰角(°),方位角(°),"

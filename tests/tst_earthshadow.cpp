@@ -162,7 +162,10 @@ void TstEarthShadow::umbraFactorLinearity()
     QCOMPARE(EarthShadow::umbraFactor({0.0, 6778.137, 0.0}, SUN_DIR), 1.0);
     QCOMPARE(EarthShadow::umbraFactor(nightSat(r, 0.0), SUN_DIR), 0.0);
     QCOMPARE(EarthShadow::umbraFactor(nightSat(r, (uHigh + 1.0) * deg), SUN_DIR), 1.0);
-    QCOMPARE(EarthShadow::umbraFactor(nightSat(r, 0.5 * (uLow + uHigh) * deg), SUN_DIR), 0.5);
+    // 半影中点: 理论值正好 0.5, 但浮点实现有 ~3e-14 误差——
+    // QCOMPARE(double) 靠 Qt6 的模糊比较才过, 换成显式阈值防脆
+    QVERIFY(qAbs(EarthShadow::umbraFactor(
+                     nightSat(r, 0.5 * (uLow + uHigh) * deg), SUN_DIR) - 0.5) < 1e-9);
 
     // 与 checkShadow 严格一致: 端点附近落在对应的三态区间
     QCOMPARE(EarthShadow::checkShadow(nightSat(r, (uLow - 1e-9) * deg), SUN_DIR),

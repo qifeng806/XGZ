@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -59,11 +60,17 @@ double MagnitudeCalc::standardMagnitude(const std::string &satName, double fallb
     for (const auto &e : kCatalog) {
         size_t pos = upper.find(e.frag);
         while (pos != std::string::npos) {
-            // 词边界匹配: 前缀不能是字母/数字，避免 "XGPS"/"LOGOES" 误命中
+            // 词边界匹配（两端）: 前缀不能是字母/数字, 后缀同样要求
+            // 非字母数字——避免 "XGPS"/"LOGOES" 前缀误命中,
+            // 也避免 "STARLINKERS-1" 这类后缀误命中
             bool atWordStart =
                 (pos == 0) ||
                 !std::isalnum(static_cast<unsigned char>(upper[pos - 1]));
-            if (atWordStart) return e.mag;
+            size_t end = pos + std::strlen(e.frag);
+            bool atWordEnd =
+                (end == upper.length()) ||
+                !std::isalnum(static_cast<unsigned char>(upper[end]));
+            if (atWordStart && atWordEnd) return e.mag;
             pos = upper.find(e.frag, pos + 1);
         }
     }

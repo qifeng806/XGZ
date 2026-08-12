@@ -90,6 +90,7 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
     if (m_cancelled) {
         m_cancelled = false;
         if (m_reply == reply) m_reply = nullptr;
+        reply->deleteLater();   // 修复: 取消分支此前漏删 reply，反复取消会累积泄漏
         return;
     }
     if (m_reply != reply) {

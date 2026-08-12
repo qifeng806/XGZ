@@ -112,6 +112,14 @@ std::optional<EciState> Propagator::propagate(double jd)
     if (err != perturb::Sgp4Error::NONE)
         return std::nullopt;
 
+    // 防御: 数值异常（位置/速度非有限）时按失败处理,
+    // 防止 NaN 污染后续过境几何/光照计算
+    if (!std::isfinite(sv.position[0]) || !std::isfinite(sv.position[1])
+        || !std::isfinite(sv.position[2])
+        || !std::isfinite(sv.velocity[0]) || !std::isfinite(sv.velocity[1])
+        || !std::isfinite(sv.velocity[2]))
+        return std::nullopt;
+
     EciState result;
     result.posKm  = sv.position;
     result.velKms = sv.velocity;

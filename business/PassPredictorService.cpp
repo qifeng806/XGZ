@@ -74,6 +74,7 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
     m_batchPasses.clear();
     m_batchCompleted = 0;
     m_batchTotal = jobs.size();
+    m_batchFinished = false;   // 新批次开始, 允许转发单星元信息
     const int seq = ++m_batchSeq;   // 本批次序号: 迟到的旧批次信号在此校验丢弃
 
     // 固定大小 worker 池（H2 修复）: 逐颗建线程在 starlink/active 等大组
@@ -116,7 +117,10 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         connect(thread, &QThread::finished, worker, &QObject::deleteLater);
         connect(worker, &PassPredictWorker::metaInfo, this,
                 [this, seq](QString model, QString epochUtc, double ageDays) {
-                    if (seq != m_batchSeq) return;
+                    // 批次收尾(resultReady 已发出)后, 同批次内迟到 worker 的
+                    // 单星元信息不再转发——否则会覆盖"批量 N 颗"汇总并随机
+                    // 改写历元栏（队列投递顺序无保证）
+                    if (seq != m_batchSeq || m_batchFinished) return;
                     emit metaInfo(model, epochUtc, ageDays);
                 });
 
@@ -140,6 +144,7 @@ void PassPredictorService::finishBatch()
             return a.maxElevDeg > b.maxElevDeg;
         });
     emit resultReady(m_batchPasses);
+    m_batchFinished = true;   // 收尾: 迟到的单星 metaInfo 不再转发
     m_batchPasses.clear();
 }
 
@@ -177,6 +182,11 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
             aj.worker = nullptr;
             return false;
         }
+    } else {
+        // 线程未被观察为运行状态（尚未启动或已结束）: 防御性地 quit()
+        // 一次——若 start() 已发出而 OS 线程即将进入运行, quit 会让其
+        // 立即退出, 避免 deleteLater 落在"正在启动/运行"的线程上
+        aj.thread->quit();
     }
     aj.thread->deleteLater();
     aj.thread = nullptr;

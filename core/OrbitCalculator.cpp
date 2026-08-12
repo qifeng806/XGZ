@@ -357,9 +357,14 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
         }
     }
 
-    // 标准三分搜索精化 TCA（单峰函数保证收敛，无平台发散问题）
-    const double delta = TCA_REFINE_SEC / 86400.0;  // seconds in JD
-    double lo = bestJD - delta, hi = bestJD + delta;
+    // 标准三分搜索精化 TCA（单峰函数保证收敛，无平台发散问题）;
+    // 半宽取 max(3s, 1.5×粗扫步长)——粗扫最优点与真峰可相距 ±1 步长,
+    // 窗口过窄会收敛到次峰; 窗口再钳制到 [aos, los]: 跨窗/截断过境的峰
+    // 可能落在窗口边界外, 不钳制会抖出 tcaJd < aosJd 的时序倒挂
+    const double delta = std::max(TCA_REFINE_SEC,
+                                  1.5 * m_cfg.maxElevScanStepSec) / 86400.0;
+    double lo = std::max(bestJD - delta, aosJD);
+    double hi = std::min(bestJD + delta, losJD);
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
         if (cancelled()) return;
         double m1 = lo + (hi - lo) / 3.0;
@@ -371,6 +376,7 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
     }
 
     bestJD = (lo + hi) * 0.5;
+    bestJD = std::max(aosJD, std::min(bestJD, losJD));   // 数值误差兜底
     outElDeg = elevationAt(propagate, obs, bestJD);
     computeMoment(propagate, obs, bestJD, outLook, outGeo);
     outJdMs = jdToIntMs(bestJD);
@@ -499,6 +505,9 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             double prevLos = intMsToJd(merged.back().losJdMs);
             double curAos  = intMsToJd(passes[i].aosJdMs);
             if (curAos - prevLos < gapDays) {
+                // 后段 AOS（ms）: 两段间隙（地平线以下）内的采样点须丢弃,
+                // 否则绘出负仰角凹陷并破坏"采样仰角 ≥ 掩星角"的不变量
+                const int64_t curAosMs = passes[i].aosJdMs;
                 // 合并：用较晚的 LOS 替换
                 if (passes[i].losJdMs > merged.back().losJdMs) {
                     merged.back().losJdMs = passes[i].losJdMs;
@@ -536,13 +545,14 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                     merged.back().magValid = passes[i].magValid;
                 }
                 // L-2 修复: 弧段采样合并（无论 TCA 取自哪一段都执行），
-                // 追加后半段的点并保持时间单调、跳过重叠区——保证 TCA 峰值
-                // 处的采样点不会从星表中消失
+                // 追加后半段的点并保持时间单调、跳过重叠区与两段间隙
+                // （间隙点在 [mergeLosMs, curAosMs) 内, 地平线以下）——
+                // 保证 TCA 峰值处的采样点不会从星表中消失
                 auto &dst = merged.back().samples;
                 const int64_t lastT = dst.empty() ? std::numeric_limits<int64_t>::min()
                                                   : dst.back().jdMs;
                 for (const auto &s : passes[i].samples)
-                    if (s.jdMs > lastT) dst.push_back(s);
+                    if (s.jdMs > lastT && s.jdMs >= curAosMs) dst.push_back(s);
             } else {
                 merged.push_back(std::move(passes[i]));
             }
@@ -557,6 +567,17 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             if (azDiff > 180.0) azDiff -= 360.0;
             if (azDiff < -180.0) azDiff += 360.0;
             ev.passType = (azDiff > 0.0) ? 0 : 1;
+            // 可见性同以新 TCA 时刻的光照/太阳高度重推——TCA 可能已换为
+            // 后段, 旧分类（前段 TCA）会与展示字段自相矛盾
+            double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
+            bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra)
+                          && ev.tcaIllum > 0.5;
+            if (bestSunAlt < m_cfg.darkSkyThresholdDeg && satLit)
+                ev.visibility = PassVisibility::Visible;
+            else if (bestSunAlt < m_cfg.darkSkyThresholdDeg)
+                ev.visibility = PassVisibility::RadioOnly;
+            else
+                ev.visibility = PassVisibility::Daylight;
         }
         passes = std::move(merged);
     }
