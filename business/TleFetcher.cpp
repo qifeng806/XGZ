@@ -76,6 +76,10 @@ void TleFetcher::startRequest(const QUrl &url, const QString &tag)
 
     QNetworkRequest req(url);
     req.setTransferTimeout(30000);
+    // CelesTrak 若返回 3xx（域名/路径调整），自动跟随，避免"未解析到有效
+    // TLE"的误导性错误（仅允许降级到同样安全或更安全的策略）
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
     req.setHeader(QNetworkRequest::UserAgentHeader,
                   QStringLiteral("XGZ-PassPredictor/1.0 (Qt %1)").arg(QT_VERSION_STR));
 
@@ -93,9 +97,16 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
 {
     // 取消请求或已被新请求取代 → 静默忽略（不弹"网络错误"误报）
     if (m_cancelled) {
-        m_cancelled = false;
-        if (m_reply == reply) m_reply = nullptr;
-        m_pendingTag.clear();   // 陈旧 tag 一并清掉, 防未来按 tag 过滤时误判
+        // 双取消竞态: 本分支只清自身状态。旧取消请求的迟到 finished
+        // 若在此被处理（m_reply 可能已指向新一轮请求）就无条件清除
+        // m_cancelled/m_pendingTag, 会让紧随其后的第二轮取消 aborted
+        // 回复误走"正常错误路径"弹出虚假的"网络错误"对话框。
+        // → 仅当这是当前活动回复时才复位全局状态
+        if (m_reply == reply) {
+            m_cancelled = false;
+            m_reply = nullptr;
+            m_pendingTag.clear();
+        }
         reply->deleteLater();   // 修复: 取消分支此前漏删 reply，反复取消会累积泄漏
         return;
     }

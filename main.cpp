@@ -23,11 +23,14 @@ int main(int argc, char *argv[])
     registerMetaTypes();
 
     // 单实例保护：同一用户会话内仅允许一个 XGZ 实例（锁随 main 栈对象持有至进程退出）
+    // 注意: 不使用 setStaleLockTime(0)——那会禁用陈旧锁检测, 崩溃/强杀后残留的
+    // 锁文件将永久拦截启动; 保留默认 30 秒, 崩溃后等待 30 秒即自动接管
     QLockFile lock(QDir::temp().filePath("xgz-" + qEnvironmentVariable("USERNAME", "user") + ".lock"));
-    lock.setStaleLockTime(0);
     if (!lock.tryLock(10)) {
         QMessageBox::information(nullptr, "XGZ",
-            "XGZ 已在运行，本实例即将退出。", QMessageBox::Ok);
+            "XGZ 已在运行，本实例即将退出。\n"
+            "(若确认没有其他实例，请删除该锁文件后重试)",
+            QMessageBox::Ok);
         return 0;
     }
 

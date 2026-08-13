@@ -139,16 +139,46 @@ void TstTleParser::errorPaths()
     QVERIFY(r6.has_value());
     QVERIFY(!r6->checksumValid);
     QCOMPARE(err.code, TleParser::ParseError::CHECKSUM_FAILED);
+
+    // B* 指数超界（>9）→ 解析异常路径
+    std::string badBstar = ISS_L1;
+    badBstar.replace(53, 8, "12345-10");
+    auto r7 = TleParser::parse(badBstar, ISS_L2, &err);
+    QVERIFY(!r7.has_value());
+    QCOMPARE(err.code, TleParser::ParseError::BAD_BS);
+
+    // 行尾带 \r（Windows 文件直传）: 校验和被回车挤掉 → 应剥离后正常解析
+    std::string crL1 = ISS_L1; crL1 += '\r';
+    std::string crL2 = ISS_L2; crL2 += '\r';
+    auto r8 = TleParser::parse(crL1, crL2, &err);
+    QVERIFY(r8.has_value());
+    QVERIFY(r8->checksumValid);
+
+    // 非闰年历元日 366.5（上限 366, 日计数 1 起）→ 拒绝
+    std::string badDay = ISS_L1;
+    badDay.replace(18, 14, "25366.50000000");
+    auto r9 = TleParser::parse(badDay, ISS_L2, &err);
+    QVERIFY(!r9.has_value());
+    QCOMPARE(err.code, TleParser::ParseError::BAD_EPOCH);
+
+    // 闰年历元日 366.5（2024 闰年）→ 合法
+    std::string leapDay = ISS_L1;
+    leapDay.replace(18, 14, "24366.50000000");
+    auto r10 = TleParser::parse(leapDay, ISS_L2, &err);
+    QVERIFY(r10.has_value());
+    QCOMPARE(r10->epochYear, 2024);
 }
 
 void TstTleParser::classifyModelTests()
 {
-    // 判据: 周期 ≥ 225 min（平运动 ≤ 6.4 rev/day）→ SDP4，与 Vallado/perturb 一致
+    // 判据: 周期 ≥ 225 min（平运动 ≤ 6.4 rev/day）→ SDP4，与 Vallado/perturb 一致;
+    // 深空带内周期 ≥ 1400 min（平运动 ≤ 1440/1400 ≈ 1.0286）→ GEO 同步带
     QCOMPARE(TleParser::classifyModel(15.49), Sgp4Type::LEO_SGP4);   // ISS
     QCOMPARE(TleParser::classifyModel(6.5),  Sgp4Type::LEO_SGP4);    // 略高于阈值
-    QCOMPARE(TleParser::classifyModel(6.4),  Sgp4Type::MEO_SDP4);    // 阈值点
+    QCOMPARE(TleParser::classifyModel(6.4),  Sgp4Type::MEO_SDP4);    // 225min 阈值点
     QCOMPARE(TleParser::classifyModel(2.0),  Sgp4Type::MEO_SDP4);    // MOLNIYA
-    QCOMPARE(TleParser::classifyModel(1.0),  Sgp4Type::MEO_SDP4);    // 24h 边界
+    QCOMPARE(TleParser::classifyModel(1.05), Sgp4Type::MEO_SDP4);    // 周期 ≈1371min 仍属中轨
+    QCOMPARE(TleParser::classifyModel(1.0),  Sgp4Type::GEO_SDP4_DS); // 同步带平运动 ≈1.0
     QCOMPARE(TleParser::classifyModel(0.99), Sgp4Type::GEO_SDP4_DS); // GEO
     QCOMPARE(TleParser::classifyModel(0.073),Sgp4Type::GEO_SDP4_DS); // WIND
 }

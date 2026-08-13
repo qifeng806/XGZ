@@ -16,7 +16,6 @@
 #endif
 
 namespace {
-    constexpr double MU_KM3_S2   = 398600.8;   // 地球引力常数 km³/s²
     constexpr double EXTEND_MIN   = 60.0;      // 跨窗口过境延长搜索（分钟）
     constexpr double TCA_REFINE_SEC = 3.0;     // TCA 三分搜索初始半宽（秒）
     constexpr double SEC_PER_DAY  = 86400.0;
@@ -61,18 +60,29 @@ static void fillPassDetails(PassEvent &ev,
                 auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
                 ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
                 ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA.distanceAU);
+            } else {
+                // 传播失败: 不得让 PassEvent 保持结构体默认值 FullSunlight/1.0
+                // —— 那会把失败时刻"默认为照亮", 暗天过境被误判为可见
+                ev.aosSatShadow = ShadowStatus::InUmbra;
+                ev.aosIllum = 0.0;
             }
             if (eciT) {
                 auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
                 auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
                 ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
                 ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT.distanceAU);
+            } else {
+                ev.tcaSatShadow = ShadowStatus::InUmbra;
+                ev.tcaIllum = 0.0;
             }
             if (eciL) {
                 auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
                 auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
                 ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
                 ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL.distanceAU);
+            } else {
+                ev.losSatShadow = ShadowStatus::InUmbra;
+                ev.losIllum = 0.0;
             }
         }
 
@@ -177,7 +187,10 @@ void OrbitCalculator::collectSamples(PropagateFn &propagate,
     if (!m_cfg.enableSamples || m_cfg.sampleStepSec <= 0.0) return;
     const double step = m_cfg.sampleStepSec / 86400.0;
     ev.samples.clear();
-    ev.samples.reserve(static_cast<size_t>((jdLOS - jdAOS) / step) + 2);
+    // 防御: 调用链保证 jdLOS > jdAOS, 但数值抖动/上游配置错误时负数会
+    // 在 size_t 转换后变成天文数字触发 bad_alloc
+    const double n = std::max(0.0, (jdLOS - jdAOS) / step);
+    ev.samples.reserve(static_cast<size_t>(n) + 2);
     // 传播一次完成全部字段（含多普勒），避免对同一时刻二次传播
     for (double jd = jdAOS; jd <= jdLOS + 1e-12; jd += step) {
         if (cancelled()) return;
@@ -231,9 +244,16 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     };
 
     // 二分精化状态翻转边界: [lo, hi] 端点可见性已知不同，收敛到区间内的翻转点。
-    // 不变式: visibleAt(lo) == A, visibleAt(hi) == B（A ≠ B），收敛到翻转位置
+    // 不变式: visibleAt(lo) == A, visibleAt(hi) == B（A ≠ B），收敛到翻转位置。
+    // 防御: 若区间内存在多次翻转（半影边缘抖动/阈值边界叠加的罕见情况），
+    // 二分会收敛到任意一个翻转点而非首/末边界——每轮重查端点, 一旦端点
+    // 可见性相同即退化为返回区间端点（真实可见段的成员），不做错误精化
     auto refineBoundary = [&](double jdLo, double jdHi) -> double {
         for (int i = 0; i < m_cfg.bisectionIters; ++i) {
+            if (cancelled()) return jdLo;
+            bool vLo = visibleAt(jdLo);
+            bool vHi = visibleAt(jdHi);
+            if (vLo == vHi) return jdLo;   // 多翻转: 不精化, 返回端点
             double mid = (jdLo + jdHi) * 0.5;
             if (visibleAt(mid)) jdHi = mid;
             else                jdLo = mid;
@@ -320,6 +340,7 @@ double OrbitCalculator::bisectAOS(PropagateFn &propagate,
         return jdBelow;
     double lo = jdBelow, hi = jdAbove;
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
+        if (cancelled()) return lo;   // 取消响应: 二分期间也保持敏感
         double mid = (lo + hi) * 0.5;
         double el = elevationAt(propagate, obs, mid);
         if (el < maskEl) lo = mid;
@@ -336,6 +357,7 @@ double OrbitCalculator::bisectLOS(PropagateFn &propagate,
     double maskEl = obs.minElevDeg();
     double lo = jdAbove, hi = jdBelow;
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
+        if (cancelled()) return lo;
         double mid = (lo + hi) * 0.5;
         double el = elevationAt(propagate, obs, mid);
         if (el >= maskEl) lo = mid;
@@ -399,8 +421,14 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                                                  double hoursAhead,
                                                  const std::atomic<bool> *cancel) const
 {
-    const double jdEnd    = jdStart + hoursAhead / 24.0;
+    // 入口防御: 非法配置/非法时间会导致下方主循环 `for(;;)` 永不死去
+    // （stepDays<=0 不前进、jdStart=NaN 恒不满足 jd>=jdEnd）→ 拒绝并返回空
     const double stepDays = m_cfg.coarseStepSec / 86400.0;
+    if (!(stepDays > 0.0) || !std::isfinite(jdStart) || !std::isfinite(hoursAhead)
+        || hoursAhead < 0.0 || !std::isfinite(observer.minElevDeg())) {
+        return {};
+    }
+    const double jdEnd    = jdStart + hoursAhead / 24.0;
     const double maskEl   = observer.minElevDeg();
     std::vector<PassEvent> passes;
 
@@ -450,8 +478,13 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         return true;
     };
 
+    // 兜底迭代上限: 正常路径由 jd>=jdEnd 退出; 此上限仅防御
+    // stepDays 极小值（用户配置 0.001s 级）造成的亿级迭代
+    const int64_t maxSteps = static_cast<int64_t>(std::ceil(
+        hoursAhead * 86400.0 / std::max(m_cfg.coarseStepSec, 1e-6))) + 2;
+    int64_t stepsDone = 0;
     for (double jd = jdStart;; jd += stepDays) {
-        if (cancelled()) return passes;   // 协作式取消
+        if (cancelled() || ++stepsDone > maxSteps) return passes;   // 协作式取消
 
         double el = elevationAt(propagate, observer, jd);
 

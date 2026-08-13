@@ -541,7 +541,21 @@ void MainWindow::onTleDownloaded(QString rawText, QString groupId)
     dlg.setText(rawText);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    startBatchFromBlocks(blocks, "在线更新");
+    // 与"批量导入"入口语义统一: 以对话框编辑后的文本为唯一数据源。
+    // 用户可能删除/增补/修改卫星, 预解析的 blocks 在此作废重解析
+    int editedIncomplete = 0;
+    const auto editedBlocks = parseTleBlocks(dlg.text(), &editedIncomplete);
+    if (editedBlocks.isEmpty()) {
+        QMessageBox::warning(this, "在线更新",
+            "编辑后的文本中未识别到有效的 TLE 两行根数");
+        return;
+    }
+    if (editedIncomplete > 0) {
+        QMessageBox::warning(this, "在线更新",
+            QString("编辑后的文本中有 %2 条 TLE 不完整，已跳过（其余 %1 颗正常）。")
+                .arg(editedBlocks.size()).arg(editedIncomplete));
+    }
+    startBatchFromBlocks(editedBlocks, "在线更新");
 }
 
 // ============================================================================
@@ -704,10 +718,16 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     if (m_batchMode) {
         m_batchMode = false;
         if (!m_batchErrors.isEmpty()) {
+            // 大批量下失败条目可达数千, 弹窗只列前 20 条防止对话框失控
+            QStringList shown = m_batchErrors.mid(0, 20);
+            if (m_batchErrors.size() > shown.size())
+                shown << QString("…等 %1 项（共 %2 项）")
+                           .arg(m_batchErrors.size() - shown.size())
+                           .arg(m_batchErrors.size());
             QMessageBox::warning(this, "批量预报",
                 QString("%1 颗卫星预报失败:\n%2")
                     .arg(m_batchErrors.size())
-                    .arg(m_batchErrors.join("\n")));
+                    .arg(shown.join("\n")));
             m_batchErrors.clear();
         }
     }
@@ -729,6 +749,11 @@ void MainWindow::onError(QString msg)
         return;
     }
     QMessageBox::warning(this, "错误", msg);
+    // 单星任务失败: 复位上次任务残留在状态栏的模型/历元, 与新错误提示并存
+    // 会造成"明明失败了却显示模型/历元正常"的歧义
+    setStatusText(m_statusModel, "模型: —");
+    setStatusText(m_statusEpoch, "历元: —");
+    m_statusEpoch->setStyleSheet(QString());
     m_predictBtn->setEnabled(true);
     m_batchImportBtn->setEnabled(true);
     m_onlineUpdateBtn->setEnabled(true);
@@ -849,7 +874,9 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         switch (p.tcaSatShadow) {
         case ShadowStatus::FullSunlight: litText = "日照"; break;
         case ShadowStatus::InPenumbra:
-            litText = QString("半影 %1%").arg(qBound(1, static_cast<int>(p.tcaIllum * 100.0), 99));
+            // 边界值 tcaIllum==1.0（理论刚出半影）显示 100% 而非钳制的 99%,
+            // 与"日照"分类在界线上衔接一致
+            litText = QString("半影 %1%").arg(qBound(1, static_cast<int>(p.tcaIllum * 100.0), 100));
             break;
         case ShadowStatus::InUmbra:      litText = "本影"; break;
         }

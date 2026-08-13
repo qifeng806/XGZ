@@ -31,6 +31,7 @@ SOURCES += \
     tst_propagator.cpp \
     tst_orbitcalc.cpp \
     tst_magnitude.cpp \
+    tst_doppler.cpp \
     ../core/TleParser.cpp \
     ../core/Propagator.cpp \
     ../core/CoordTransform.cpp \

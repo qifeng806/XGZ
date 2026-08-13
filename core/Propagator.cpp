@@ -41,13 +41,17 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
     m_satellite.reset();
     m_initialized = false;
 
+    // 标准 TLE 两行根数必须是 69 字符（列对齐: 末位为校验和）。
+    // 历史上曾用空格补齐短行——那会掩盖数据损坏并让底层按错列解析;
+    // 与 TleParser::BAD_LENGTH 判据对齐, 显式拒绝
+    if (line1.length() < 69 || line2.length() < 69) {
+        errorMsg = "TLE 行长度不足 69 字符";
+        return false;
+    }
+
     // perturb::Satellite::from_tle 接受非 const string 引用（底层会修改）
     std::string l1 = line1;
     std::string l2 = line2;
-
-    // 确保长度至少 69
-    if (l1.length() < 69) l1.append(69 - l1.length(), ' ');
-    if (l2.length() < 69) l2.append(69 - l2.length(), ' ');
 
     try {
         auto sat = std::make_unique<perturb::Satellite>(
@@ -79,9 +83,13 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
         if (m_name.empty()) m_name = rec.satnum;
         const double periodMin = (rec.no_unkozai > 1e-12)
             ? (2.0 * 3.14159265358979323846) / rec.no_unkozai : 0.0;
-        if (periodMin < 225.0)         m_modelType = Sgp4Type::LEO_SGP4;
-        else if (periodMin < 1440.0)   m_modelType = Sgp4Type::MEO_SDP4;
-        else                           m_modelType = Sgp4Type::GEO_SDP4_DS;
+        // 分类带: 与 TleParser::classifyModel 同阈值、同基准（no_unkozai 周期）,
+        // 避免 225min 边界处两处标签打架:
+        //   < 225 min → LEO;  [225, 1400) min → MEO;
+        //   ≥ 1400 min → GEO（同步带 1436min 及其上下漂移轨道/超同步轨道均属此带）
+        if (periodMin < 225.0)          m_modelType = Sgp4Type::LEO_SGP4;
+        else if (periodMin < 1400.0)    m_modelType = Sgp4Type::MEO_SDP4;
+        else                            m_modelType = Sgp4Type::GEO_SDP4_DS;
 
         m_satellite = std::move(sat);
     } catch (const std::exception &e) {

@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // TleParser.cpp — TLE 两行根数解析实现
 // =============================================================================
 #include "TleParser.h"
@@ -71,8 +71,19 @@ std::optional<TleData> TleParser::parse(
     TleData tle;
     ParseError err;
 
+    // ---- 步骤 0: 统一去掉行尾 \r（Windows 文件直接传入时） ----
+    // 69 字符的 TLE 若带 \r, 会落在校验和列(索引 68)上把校验位挤成回车,
+    // 导致 verifyChecksum 假阴性——先剥离再按列解析
+    auto stripCr = [](const std::string &s) {
+        if (!s.empty() && s.back() == '\r')
+            return s.substr(0, s.size() - 1);
+        return s;
+    };
+    const std::string l1in = stripCr(line1);
+    const std::string l2in = stripCr(line2);
+
     // ---- 步骤 1: 长度校验 ----
-    if (line1.length() < 69 || line2.length() < 69) {
+    if (l1in.length() < 69 || l2in.length() < 69) {
         err.code = ParseError::BAD_LENGTH;
         err.detail = "TLE line too short; minimum 69 characters per line";
         if (errOut) *errOut = err;
@@ -80,13 +91,13 @@ std::optional<TleData> TleParser::parse(
     }
 
     // ---- 步骤 2: 行号校验 ----
-    if (line1[0] != '1') {
+    if (l1in[0] != '1') {
         err.code = ParseError::BAD_LINE_NUMBER;
         err.detail = "Line 1 must start with '1'";
         if (errOut) *errOut = err;
         return std::nullopt;
     }
-    if (line2[0] != '2') {
+    if (l2in[0] != '2') {
         err.code = ParseError::BAD_LINE_NUMBER;
         err.detail = "Line 2 must start with '2'";
         if (errOut) *errOut = err;
@@ -96,7 +107,7 @@ std::optional<TleData> TleParser::parse(
     // ---- 步骤 3: NORAD 编号（行1 列3-7） ----
     {
         int nid = 0;
-        if (!parseStrict(line1.substr(2, 5), nid)) {
+        if (!parseStrict(l1in.substr(2, 5), nid)) {
             err.code = ParseError::BAD_NORAD;
             err.detail = "Invalid NORAD ID";
             if (errOut) *errOut = err;
@@ -111,12 +122,11 @@ std::optional<TleData> TleParser::parse(
     // ---- 步骤 4: 历元（行1 列19-32） ----
     // 格式: YYDDD.DDDDDDDD（2位年 + 3位日 + 8位小数）
     {
-        const std::string epochStr = line1.substr(18, 14);
+        const std::string epochStr = l1in.substr(18, 14);
         int epochYr2 = 0;
         double epochDayVal = 0.0;
         if (!parseStrict(epochStr.substr(0, 2), epochYr2)
-            || !parseStrict(epochStr.substr(2), epochDayVal)
-            || epochDayVal < 0.0 || epochDayVal >= 367.0) {
+            || !parseStrict(epochStr.substr(2), epochDayVal)) {
             err.code = ParseError::BAD_EPOCH;
             err.detail = "Invalid epoch format";
             if (errOut) *errOut = err;
@@ -129,12 +139,23 @@ std::optional<TleData> TleParser::parse(
         else
             tle.epochYear = 1900 + epochYr2;
 
+        // 年内天数上限按闰年判定（TLE 日计数 1 起, 上限 365/366）
+        const int  y     = tle.epochYear;
+        const bool leap  = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        const double dayMax = leap ? 367.0 : 366.0;   // 日计数 1..365/366 → < 366/367
+        if (epochDayVal < 1.0 || epochDayVal >= dayMax) {
+            err.code = ParseError::BAD_EPOCH;
+            err.detail = "Invalid epoch day-of-year";
+            if (errOut) *errOut = err;
+            return std::nullopt;
+        }
+
         tle.epochDay = epochDayVal;
     }
 
     // ---- 步骤 5: B* 阻力项（行1 列54-61） ----
     try {
-        std::string bstarStr = line1.substr(53, 8);
+        std::string bstarStr = l1in.substr(53, 8);
         // 格式: "-12345-3" → -0.12345e-3
         tle.bstar = parseScientific(bstarStr);
     } catch (...) {
@@ -157,31 +178,31 @@ std::optional<TleData> TleParser::parse(
         int    rv = 0;
 
         // 倾角（列9-16，度）
-        if (!parseStrict(line2.substr(8, 8), v)) return fail();
+        if (!parseStrict(l2in.substr(8, 8), v)) return fail();
         tle.inclinationDeg = v;
 
         // 升交点赤经（列18-25，度）
-        if (!parseStrict(line2.substr(17, 8), v)) return fail();
+        if (!parseStrict(l2in.substr(17, 8), v)) return fail();
         tle.raanDeg = v;
 
         // 偏心率（列27-33，省略前导"0."）
-        if (!parseStrict("0." + line2.substr(26, 7), v)) return fail();
+        if (!parseStrict("0." + l2in.substr(26, 7), v)) return fail();
         tle.eccentricity = v;
 
         // 近地点辐角（列35-42，度）
-        if (!parseStrict(line2.substr(34, 8), v)) return fail();
+        if (!parseStrict(l2in.substr(34, 8), v)) return fail();
         tle.argPerigeeDeg = v;
 
         // 平近点角（列44-51，度）
-        if (!parseStrict(line2.substr(43, 8), v)) return fail();
+        if (!parseStrict(l2in.substr(43, 8), v)) return fail();
         tle.meanAnomalyDeg = v;
 
         // 平运动（列53-63，rev/day）
-        if (!parseStrict(line2.substr(52, 11), v)) return fail();
+        if (!parseStrict(l2in.substr(52, 11), v)) return fail();
         tle.meanMotionRevDay = v;
 
         // 圈号（列64-68）
-        if (!parseStrict(line2.substr(63, 5), rv)) return fail();
+        if (!parseStrict(l2in.substr(63, 5), rv)) return fail();
         tle.revNumber = rv;
     }
 
@@ -209,7 +230,7 @@ std::optional<TleData> TleParser::parse(
     tle.ephemerisType = classifyModel(tle.meanMotionRevDay);
 
     // ---- 步骤 9: 校验和（可选） ----
-    tle.checksumValid = verifyChecksum(line1) && verifyChecksum(line2);
+    tle.checksumValid = verifyChecksum(l1in) && verifyChecksum(l2in);
     if (!tle.checksumValid) {
         err.code = ParseError::CHECKSUM_FAILED;
         err.detail = "Checksum mismatch (proceeding anyway)";
@@ -219,7 +240,7 @@ std::optional<TleData> TleParser::parse(
     // ---- 步骤 10: 元素集编号 ----
     {
         int n = 0;
-        if (!parseStrict(line1.substr(64, 4), n)) n = 0;   // 非致命，容错
+        if (!parseStrict(l1in.substr(64, 4), n)) n = 0;   // 非致命，容错
         tle.elsetNum = n;
     }
 
@@ -230,13 +251,15 @@ std::optional<TleData> TleParser::parse(
 // 模型分类
 // 与 Vallado SGP4/perturb 判据一致：轨道周期 ≥ 225 分钟（平运动 ≤ 6.4 rev/day）
 // → 深空模型 SDP4；否则近地 SGP4
+// 深空带内再细分: 周期 ≥ 1400 min（平运动 ≤ 1440/1400 ≈ 1.0286 rev/day）
+// → 同步带/超同步 GEO（与 Propagator 的 no_unkozai 分类同阈值、同语义）
 Sgp4Type TleParser::classifyModel(double meanMotionRevDay)
 {
-    if (meanMotionRevDay > 6.4)        // 周期 < 225 分钟 → 近地
+    if (meanMotionRevDay > 6.4)                        // 周期 < 225 分钟 → 近地
         return Sgp4Type::LEO_SGP4;
-    else if (meanMotionRevDay >= 1.0)  // 周期 225 分钟 ~ 24 小时 → 深空/中轨
+    else if (meanMotionRevDay >= 1440.0 / 1400.0)      // 周期 225 ~ 1400 分钟 → 深空/中轨
         return Sgp4Type::MEO_SDP4;
-    else                               // 周期 > 24 小时 → 深空/同步带
+    else                                               // 周期 ≥ 1400 分钟 → 同步带/超同步
         return Sgp4Type::GEO_SDP4_DS;
 }
 

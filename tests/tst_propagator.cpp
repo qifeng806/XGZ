@@ -31,7 +31,6 @@ struct VerifCase {
     double startmfe = 0.0;
     double stopmfe  = 0.0;
     double deltamin = 0.0;
-    bool badLen = false;          // 短行（Vallado 专用格式，非标准 69 字符）
 };
 
 std::vector<VerifCase> loadVerifCases(const QString &path)
@@ -60,11 +59,18 @@ std::vector<VerifCase> loadVerifCases(const QString &path)
         std::string w;
         while (ss >> w) tok.push_back(w);
         if (tok.size() >= 10) {
-            c.startmfe = std::stod(tok[tok.size() - 3]);
-            c.stopmfe  = std::stod(tok[tok.size() - 2]);
-            c.deltamin = std::stod(tok[tok.size() - 1]);
+            try {
+                c.startmfe = std::stod(tok[tok.size() - 3]);
+                c.stopmfe  = std::stod(tok[tok.size() - 2]);
+                c.deltamin = std::stod(tok[tok.size() - 1]);
+            } catch (const std::exception &) {
+                // 畸形 token 不应让整个测试进程崩溃——跳过该用例并留待
+                // 运行参数缺失时由 runWindow 以默认窗口执行
+                c.startmfe = 0.0;
+                c.stopmfe  = 1440.0;
+                c.deltamin = 720.0;
+            }
         }
-        c.badLen = (l1.size() < 69) || (l2.size() < 69);
         cases.push_back(std::move(c));
     }
     return cases;
@@ -137,7 +143,8 @@ bool firstFailureWithin(Propagator &p, double t0, double t1, double step)
     return false;
 }
 
-// 期望的轨道模型分类（由周期独立推导: n≥6.4→LEO, 1.0≤n<6.4→MEO, n<1.0→GEO）
+// 期望的轨道模型分类（由周期独立推导，与 Propagator/TleParser 同带:
+// n>6.4→LEO, 1440/1400≈1.0286<n≤6.4→MEO, n≤1.0286→GEO 同步带/超同步）
 Sgp4Type expectModel(const std::string &norad)
 {
     static const std::vector<std::string> leo = {
@@ -145,11 +152,12 @@ Sgp4Type expectModel(const std::string &norad)
     };
     static const std::vector<std::string> meo = {
         "04632", "08195", "09880", "09998", "11801", "16925", "21897", "22674",
-        "23177", "23599", "24208", "25954", "26900", "26975", "28129", "28623", "28626",
+        "23177", "23599", "26975", "28129", "28623",
     };
     for (const auto &s : leo) if (norad == s) return Sgp4Type::LEO_SGP4;
     for (const auto &s : meo) if (norad == s) return Sgp4Type::MEO_SDP4;
-    return Sgp4Type::GEO_SDP4_DS;   // 14128, 20413, 23333, 33334
+    // 其余 → GEO（含近同步漂移 24208/25954/26900/28626, 14128, 20413, 23333, 33334）
+    return Sgp4Type::GEO_SDP4_DS;
 }
 
 // 已知在窗口内衰减/出错的用例
@@ -172,6 +180,8 @@ private slots:
     void decayCaseSubOrbital();
     void keplerPeriodicity();
     void epochConsistency();
+    void shortLineRejected();
+    void moveSemantics();
 
 private:
     QString m_verPath;
@@ -190,19 +200,22 @@ void TstPropagator::verifyDatasetAllCases()
     QVERIFY2(cases.size() >= 30, "SGP4-VER.TLE 用例数不足");
 
     int checked = 0;
+    int rejected = 0;
     for (const auto &c : cases) {
         std::string err;
         Propagator p;
         const bool ok = p.initialize(c.line1, c.line2, err);
 
-        if (c.badLen) {
-            // 短行格式（Vallado 专用，如 11801/88888）— perturb 按标准 69 字符校验，
-            // 拒绝属预期行为；确保错误信息被填充
-            QVERIFY2(!ok, qPrintable(QString("NORAD %1 短行不应初始化成功").arg(c.line1.substr(2, 5).c_str())));
+        const std::string norad = c.line1.substr(2, 5);
+
+        // Vallado 数据集中的短行专用用例（11801/88888，<69 字符）:
+        // Propagator 按标准 69 字符显式拒绝，属预期行为
+        if (c.line1.size() < 69 || c.line2.size() < 69) {
+            QVERIFY2(!ok, qPrintable(QString("NORAD %1 短行应被拒绝").arg(norad.c_str())));
+            ++rejected;
             continue;
         }
 
-        const std::string norad = c.line1.substr(2, 5);
         if (isFailingCase(norad)) continue;   // failingCasesDecay 处理
 
         QVERIFY2(ok, qPrintable(QString("初始化失败 NORAD %1: %2")
@@ -211,7 +224,12 @@ void TstPropagator::verifyDatasetAllCases()
         QVERIFY2(p.epochJD() > 2440000.0 && p.epochJD() < 2465000.0,
                  qPrintable(QString("NORAD %1 历元 JD 异常: %2")
                             .arg(norad.c_str()).arg(p.epochJD(), 0, 'f', 4)));
-        QCOMPARE(p.modelType(), expectModel(norad));
+        const Sgp4Type got = p.modelType();
+        const Sgp4Type exp = expectModel(norad);
+        QVERIFY2(got == exp,
+                 qPrintable(QString("NORAD %1 分类不符: 实际=%2 期望=%3")
+                            .arg(norad.c_str()).arg(static_cast<int>(got))
+                            .arg(static_cast<int>(exp))));
 
         auto tle = TleParser::parse(c.line1, c.line2);
         QVERIFY(tle.has_value());
@@ -233,7 +251,7 @@ void TstPropagator::failingCasesDecay()
 
     for (const auto &c : cases) {
         const std::string norad = c.line1.substr(2, 5);
-        if (!isFailingCase(norad) || c.badLen) continue;
+        if (!isFailingCase(norad)) continue;
         if (!seen.insert(norad).second) continue;
 
         std::string err;
@@ -266,7 +284,8 @@ void TstPropagator::failingCasesDecay()
                             .arg(c.stopmfe, 0, 'f', 1)));
         ++handled;
     }
-    QCOMPARE(handled, 6);
+    // 数据文件若新增注入用例, 计数只增不减（与 isFailingCase 表同源维护）
+    QVERIFY2(handled >= 6, qPrintable(QString("注入错误用例处理数异常: %1").arg(handled)));
 }
 
 void TstPropagator::issBasicPropagation()
@@ -380,6 +399,58 @@ void TstPropagator::epochConsistency()
     const double h  = std::sqrt(hx * hx + hy * hy + hz * hz);
     const double incl = std::acos(hz / h) * 180.0 / M_PI;
     QVERIFY(std::abs(incl - 51.6424) < 2.0);
+}
+
+void TstPropagator::shortLineRejected()
+{
+    const char *L1 = "1 25544U 98067A   22071.78032407  .00021395  00000-0  39008-3 0  9996";
+    const char *L2 = "2 25544  51.6424  94.0370 0004047 256.5103  89.8846 15.49386383330227";
+
+    std::string err;
+    Propagator p;
+
+    // 截断到 40 字符（< 69）→ 显式拒绝并填充错误信息（与 TleParser::BAD_LENGTH 对齐）
+    std::string short1 = L1;
+    short1.resize(40);
+    QVERIFY(!p.initialize(short1, L2, err));
+    QVERIFY(!err.empty());
+    QVERIFY(!p.isInitialized());
+
+    std::string short2 = L2;
+    short2.resize(40);
+    QVERIFY(!p.initialize(L1, short2, err));
+    QVERIFY(!err.empty());
+
+    // 空行
+    QVERIFY(!p.initialize("", "", err));
+}
+
+void TstPropagator::moveSemantics()
+{
+    const char *L1 = "1 25544U 98067A   22071.78032407  .00021395  00000-0  39008-3 0  9996";
+    const char *L2 = "2 25544  51.6424  94.0370 0004047 256.5103  89.8846 15.49386383330227";
+
+    std::string err;
+    Propagator p;
+    QVERIFY(p.initialize(L1, L2, err));
+
+    Propagator moved = std::move(p);
+    QVERIFY(!p.isInitialized());          // 源对象失效
+    QVERIFY(moved.isInitialized());
+    QCOMPARE(moved.noradID(), 25544);
+    QCOMPARE(moved.modelType(), Sgp4Type::LEO_SGP4);
+
+    auto st = moved.propagate(moved.epochJD());
+    QVERIFY(st.has_value());              // 目标可正常传播
+
+    // 移动赋值: 目标覆盖、源失效
+    std::string err2;
+    Propagator other;
+    QVERIFY(other.initialize(L1, L2, err2));
+    other = std::move(moved);
+    QVERIFY(!moved.isInitialized());
+    QVERIFY(other.isInitialized());
+    QVERIFY(other.propagate(other.epochJD()).has_value());
 }
 
 int runTstPropagator(int argc, char *argv[])

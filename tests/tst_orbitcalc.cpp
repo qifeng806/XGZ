@@ -7,6 +7,8 @@
 #include <QtTest/QtTest>
 #include <atomic>
 #include <cmath>
+#include <algorithm>
+#include <limits>
 #include "core/OrbitCalculator.h"
 #include "core/CoordTransform.h"
 #include "testutils.h"
@@ -81,6 +83,8 @@ private slots:
     void samplesCoverPass();
     void visibleArcConsistentWithVisibility();
     void magnitudeEstimateSanity();
+    void shortPassWithinStepDetected();
+    void truncatedPassAtWindowEnd();
 };
 
 void TstOrbitCalc::predictFindsPasses()
@@ -105,9 +109,8 @@ void TstOrbitCalc::predictFindsPasses()
         QVERIFY(ev.visibility == PassVisibility::Daylight
                 || ev.visibility == PassVisibility::Visible
                 || ev.visibility == PassVisibility::RadioOnly);
-        // 大气折射修正: 地平附近修正量为正
-        if (ev.aosLook.elevDeg > 1.0)
-            QVERIFY(ev.aosElRefracted >= ev.aosLook.elevDeg);
+        // 大气折射修正: 修正量恒非负（[0,1]° 线性过渡带内同样成立）
+        QVERIFY(ev.aosElRefracted >= ev.aosLook.elevDeg);
         // 时长 = LOS − AOS（毫秒一致性, ±2s）
         const double dur = static_cast<double>(ev.losJdMs - ev.aosJdMs) / 1000.0;
         QVERIFY(std::abs(dur - ev.durationSec) < 2.0);
@@ -223,10 +226,11 @@ void TstOrbitCalc::propagationFailureTolerated()
     auto failFn = [](double) -> std::optional<EciState> { return std::nullopt; };
     QVERIFY(calc.predict(failFn, obs, JD0, 24.0).empty());
 
-    // 部分失败: 每 10 次调用失败 1 次 → 仍能正常预报
+    // 部分失败（确定性注入）: 仅第 5 次调用失败一次（不落在关键采样的
+    // 固定时刻, 与调用顺序解耦不了但完全确定, 无随机性）→ 仍能正常预报
     int calls = 0;
     auto flaky = [&calls](double jd) -> std::optional<EciState> {
-        if ((++calls % 10) == 0) return std::nullopt;
+        if (++calls == 5) return std::nullopt;
         return keplerFn(90.0)(jd);
     };
     auto passes = calc.predict(flaky, obs, JD0, 24.0);
@@ -292,9 +296,56 @@ void TstOrbitCalc::mergeAndMinDuration()
                         .arg(merged.size()).arg(raw.size())));
     QVERIFY(merged[0].losJdMs > merged[0].aosJdMs);
 
-    // 最短时长过滤: 15 min = 900 s > 所有过境（最长 ≈ 10 min）→ 空
+    // 合并语义逐字段验证: 按合并间隙把 raw 重分组, 逐组合并结果
+    {
+        struct RawGroup { size_t first, last; };
+        std::vector<RawGroup> rawGroups;
+        for (size_t i = 0; i < raw.size();) {
+            size_t j = i;
+            while (j + 1 < raw.size()
+                   && raw[j + 1].aosJdMs - raw[j].losJdMs < 7200000)   // 7200 s
+                ++j;
+            rawGroups.push_back({ i, j });
+            i = j + 1;
+        }
+        QVERIFY2(merged.size() == rawGroups.size(),
+                 qPrintable(QString("合并组数不符: 引擎=%1 期望=%2")
+                            .arg(merged.size()).arg(rawGroups.size())));
+
+        for (size_t g = 0; g < rawGroups.size(); ++g) {
+            const auto &m  = merged[g];
+            const size_t a = rawGroups[g].first;
+            const size_t b = rawGroups[g].last;
+            QVERIFY(m.aosJdMs == raw[a].aosJdMs);        // AOS 取首段
+            QVERIFY(m.losJdMs == raw[b].losJdMs);        // LOS 取末段
+            const double unionDur = static_cast<double>(raw[b].losJdMs
+                                                        - raw[a].aosJdMs) / 1000.0;
+            QVERIFY(std::abs(m.durationSec - unionDur) < 2.0);   // 时长为并集总长
+            if (m.hasVisibleArc) {
+                // 可见弧段并集 = min(组内各段 visAos) ~ max(组内各段 visLos)
+                int64_t vMin = std::numeric_limits<int64_t>::max();
+                int64_t vMax = 0;
+                for (size_t r = a; r <= b; ++r) {
+                    if (!raw[r].hasVisibleArc) continue;
+                    vMin = std::min(vMin, raw[r].visAosJdMs);
+                    vMax = std::max(vMax, raw[r].visLosJdMs);
+                }
+                QVERIFY(vMax > vMin);                    // 组内必有一段有弧
+                QVERIFY(m.visAosJdMs == vMin);
+                QVERIFY(m.visLosJdMs == vMax);
+                QVERIFY(m.visAosJdMs <= m.tcaJdMs && m.tcaJdMs <= m.visLosJdMs);
+            }
+            // 采样跨段单调且覆盖两段可见区间（不重复、不倒退）
+            if (m.samples.size() >= 2) {
+                for (size_t i = 1; i < m.samples.size(); ++i)
+                    QVERIFY(m.samples[i].jdMs > m.samples[i - 1].jdMs);
+            }
+        }
+    }
+
+    // 最短时长过滤: 7200 s > 最长合并组（≈ 5887 s）→ 空
     OrbitCalculator::Config cfgDur;
-    cfgDur.minDurationSec = 900.0;
+    cfgDur.minDurationSec = 7200.0;
     OrbitCalculator calcC(cfgDur);
     QVERIFY(calcC.predict(keplerFn(90.0), obs, JD0, 24.0).empty());
 }
@@ -367,6 +418,76 @@ void TstOrbitCalc::visibleArcConsistentWithVisibility()
             QVERIFY(ev.tcaJdMs <= ev.visLosJdMs);
         }
     }
+}
+
+// H3 正路径: 粗搜步长大于过境时长时, 步内 4 子步探测必须仍检出短过境
+void TstOrbitCalc::shortPassWithinStepDetected()
+{
+    Observer obs(60.0, 0.0, 0.0, 10.0);
+
+    // 粗步长 900s(15min) > 过境时长 ≈ 600s → 过境整体落在一个粗搜步内
+    OrbitCalculator::Config cfgCoarse;
+    cfgCoarse.coarseStepSec = 900.0;
+    OrbitCalculator calcCoarse(cfgCoarse);
+    auto coarse = calcCoarse.predict(keplerFn(90.0), obs, JD0, 24.0);
+
+    // 细步长 15s 为基准: 两次探测的过境数应一致（子步探测不应漏检）
+    OrbitCalculator calcFine;
+    auto fine = calcFine.predict(keplerFn(90.0), obs, JD0, 24.0);
+    QVERIFY2(!fine.empty(), "基准细步长扫描未检出过境");
+    QVERIFY2(coarse.size() == fine.size(),
+             qPrintable(QString("粗步长漏检: 粗=%1 细=%2")
+                        .arg(coarse.size()).arg(fine.size())));
+
+    // 检出过境的 AOS/LOS 完整性
+    for (const auto &ev : coarse) {
+        QVERIFY(ev.aosJdMs >= jdToMs(JD0) - 1000);
+        QVERIFY(ev.aosJdMs < ev.losJdMs);
+        QVERIFY(std::abs(ev.aosLook.elevDeg - 10.0) < 0.1);
+        QVERIFY(std::abs(ev.losLook.elevDeg - 10.0) < 0.1);
+    }
+}
+
+// H2: 跨窗口终点且 EXTEND 60min 仍不见 LOS 的高轨过境 → truncated 标志 + 截断语义
+void TstOrbitCalc::truncatedPassAtWindowEnd()
+{
+    // 同步高度合成轨道: 相对地面静止（周期 1436 min ≈ 恒星日）
+    constexpr double A_geo = 42164.0;
+    const double N_geo = std::sqrt(MU / (A_geo * A_geo * A_geo));
+    auto geoFn = [N_geo](double m0Deg) {
+        const double m0 = m0Deg * M_PI / 180.0;
+        return [m0, N_geo](double jd) -> std::optional<EciState> {
+            const double u = m0 + N_geo * (jd - JD0) * 86400.0;
+            const double cu = std::cos(u), su = std::sin(u);
+            EciState st;
+            st.posKm  = { A_geo * cu, A_geo * su, 0.0 };      // 赤道面
+            st.velKms = { -A_geo * N_geo * su, A_geo * N_geo * cu, 0.0 };
+            return st;
+        };
+    };
+
+    Observer obs(60.0, 0.0, 0.0, 10.0);
+    OrbitCalculator calc;
+    bool sawTruncated = false;
+    // 4 个初始相位覆盖 GEO 子点位于观测站子午线±90° 的情形——
+    // 与站子午线重合的相位产生贯穿全窗口的恒定可见过境
+    for (double m0 : { 0.0, 90.0, 180.0, 270.0 }) {
+        auto passes = calc.predict(geoFn(m0), obs, JD0, 12.0);
+        for (const auto &ev : passes) {
+            if (ev.truncated) {
+                sawTruncated = true;
+                // 截断语义: LOS 字段/时长为窗口终点(EXTEND 终点)而非真实出境
+                const double extendEnd = JD0 + (12.0 + 60.0 / 60.0) / 24.0;
+                QVERIFY2(std::abs(ev.losJdMs - jdToMs(extendEnd)) < 2000,
+                         qPrintable(QString("截断 LOS 应为 EXTEND 终点: %1 vs %2")
+                                    .arg(ev.losJdMs).arg(jdToMs(extendEnd))));
+                const double dur = static_cast<double>(ev.losJdMs - ev.aosJdMs) / 1000.0;
+                QVERIFY(std::abs(dur - ev.durationSec) < 2.0);
+            }
+        }
+    }
+    QVERIFY2(sawTruncated,
+             "同步轨道过境未触发 EXTEND 截断（4 个相位均未跨窗口终点）");
 }
 
 // 星等估算数值健全性

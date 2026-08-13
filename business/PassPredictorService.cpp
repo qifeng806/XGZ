@@ -118,7 +118,9 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         connect(worker, &PassPredictWorker::resultReady, this,
                 [this, seq](QVector<PassEvent> passes) {
                     if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
-                    m_batchPasses.append(passes);
+                    // std::move: PassEvent 含采样向量, 拷贝即整段深拷贝,
+                    // 千颗级大组下这是纯开销
+                    m_batchPasses.append(std::move(passes));
                     m_batchCompleted++;
                     emit batchProgress(m_batchCompleted, m_batchTotal);
                     if (m_batchCompleted == m_batchTotal) finishBatch();
@@ -165,9 +167,11 @@ void PassPredictorService::finishBatch()
                 return static_cast<int>(a.visibility) < static_cast<int>(b.visibility);
             return a.maxElevDeg > b.maxElevDeg;
         });
-    emit resultReady(m_batchPasses);
+    // emit 前先移动到临时量: 信号参数按值接收, 直接 emit 成员会深拷贝
+    // 整批采样向量; 移动后主线程交付只剩队列转发那一份必要拷贝
+    QVector<PassEvent> out = std::move(m_batchPasses);
+    emit resultReady(std::move(out));
     m_batchFinished = true;   // 收尾: 迟到的单星 metaInfo 不再转发
-    m_batchPasses.clear();
 }
 
 void PassPredictorService::cancelAll()
@@ -205,7 +209,15 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
             return false;
         }
     } else {
-        // 线程未被观察为运行状态（尚未启动或已结束）: 防御性 quit()。
+        // 线程未被观察为运行状态: 若已自然结束（isFinished），finished 信号
+        // 在连接建立前就已发射，finished→deleteLater 永不触发——必须直接
+        // deleteLater，否则 QThread 对象随会话累积（每完成一次单星任务
+        // 就残留一个子对象直到 service 析构）
+        if (aj.thread->isFinished()) {
+            aj.thread->deleteLater();
+            return true;
+        }
+        // 尚未启动（理论上不可达: start() 紧跟构造）: 防御性 quit()。
         // 删除改由 finished→deleteLater 兜底——若 OS 线程尚未进入 run(),
         // 主循环当轮处理 DeferredDelete 时线程可能仍在启动, 直接
         // deleteLater 会触发 "QThread: Destroyed while still running"

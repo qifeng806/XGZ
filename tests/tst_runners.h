@@ -13,5 +13,6 @@ int runTstEarthShadow(int argc, char *argv[]);
 int runTstPropagator(int argc, char *argv[]);
 int runTstOrbitCalc(int argc, char *argv[]);
 int runTstMagnitude(int argc, char *argv[]);
+int runTstDoppler(int argc, char *argv[]);
 
 #endif // TESTS_TST_RUNNERS_H

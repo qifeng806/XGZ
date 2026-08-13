@@ -35,6 +35,12 @@ inline QString testDataDir()
     return QFileInfo(rel).absolutePath();
 }
 
+// 儒略日 → UTC 毫秒（与 OrbitCalculator::jdToIntMs 同语义, 截断取整）
+inline int64_t jdToMs(double jd)
+{
+    return static_cast<int64_t>(jd * 86400000.0);
+}
+
 // UTC 年月日时 → 儒略日（Hinnant days_from_civil 算法）
 inline double jdFromUtc(int y, int mo, int d, int h = 0, int mi = 0, double s = 0.0)
 {

@@ -4,6 +4,10 @@
 // Propagator.h — perturb::Satellite 轻量封装
 // 将双精度儒略日转换为 perturb::JulianDate，调用 SGP4/SDP4 传播
 // 返回 EciState（TEME 系），失败时返回 nullopt
+//
+// 线程安全: 非线程安全。底层 SGP4 内核在每次传播时改写 satrec 的
+// atime/xli/xni/error 等成员（深空积分状态随调用推进）——同一实例
+// 必须由单线程独占，并行预报请每个任务/线程各自构造独立实例
 // =============================================================================
 #include "models.h"
 #include <memory>

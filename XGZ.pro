@@ -55,6 +55,7 @@ HEADERS += \
     ui/PolarPlotWidget.h \
     ui/GroundTrackWidget.h \
     ui/DopplerPlotWidget.h \
+    ui/CatmullRom.h \
     perturb-master/include/perturb/perturb.hpp \
     perturb-master/include/perturb/sgp4.hpp \
     perturb-master/include/perturb/tle.hpp

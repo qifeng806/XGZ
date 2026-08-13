@@ -154,8 +154,9 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         painter.drawPolygon(screen);
     }
 
-    // 地面站标注
-    {
+    // 地面站标注（无数据时不画——空任务时坐标保持默认 (0,0) 会在大西洋
+    // 画一个虚假站点, 容易被误认为真实观测站）
+    if (!m_passes.isEmpty()) {
         QPointF obsP = geoToScreen(m_obsLat, m_obsLon, x0, y0, sx, sy);
         painter.setPen(QPen(Qt::white, 2));
         painter.setBrush(Qt::black);
