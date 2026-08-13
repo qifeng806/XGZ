@@ -96,7 +96,8 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
     m_batchFinished = false;   // 新批次开始, 允许转发单星元信息
     // 预分配: PassEvent 含 std::vector<PassSample>, QVector 扩容重分配会对
     // 存量元素整体深拷贝(非共享), 千颗级批量下是 O(n²) 开销
-    m_batchPasses.reserve(qMin<qsizetype>(m_batchTotal * 4, 400000));
+    // 16 倍: 低轨 168h 窗口单星可达 100+ 过境, 4 倍预估偏小
+    m_batchPasses.reserve(qMin<qsizetype>(m_batchTotal * 16, 400000));
     const int seq = ++m_batchSeq;   // 本批次序号: 迟到的旧批次信号在此校验丢弃
 
     // 固定大小 worker 池（H2 修复）: 逐颗建线程在 starlink/active 等大组

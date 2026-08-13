@@ -89,10 +89,14 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
         return;
     }
 
+    // 点集只计算一次（范围扫描与绘制共用），避免每条曲线重复遍历/分配
+    QVector<QVector<QPointF>> curvePts(curveIdx.size());
+    for (int i = 0; i < curveIdx.size(); ++i)
+        curvePts[i] = curvePoints(m_passes[curveIdx[i]]);
+
     // 数据范围: X = 0..maxDuration, Y = [min, max]
     double xMax = 0.0, yMin = 0.0, yMax = 0.0;
-    for (int idx : curveIdx) {
-        const auto pts = curvePoints(m_passes[idx]);
+    for (const auto &pts : curvePts) {
         for (const auto &pt : pts) {
             xMax = std::max(xMax, pt.x());
             yMin = std::min(yMin, pt.y());
@@ -164,7 +168,7 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
             painter.setPen(QPen(col, 1.8));
         }
 
-        const auto pts = curvePoints(m_passes[idx]);
+        const QVector<QPointF> &pts = curvePts[i];
         QPolygonF poly;
         for (const auto &pt : pts)
             poly.append(QPointF(mapX(pt.x()), mapY(pt.y())));

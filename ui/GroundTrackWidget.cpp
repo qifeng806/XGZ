@@ -13,7 +13,8 @@ GroundTrackWidget::GroundTrackWidget(QWidget *parent)
     : QWidget(parent)
 {
     setMinimumSize(400, 250);
-    loadLandData();
+    // 陆地轮廓推迟到首次 paint 时再解析（72KB/5.3k 行, 毫秒级）:
+    // 不占用窗口构造路径, 主窗口 show() 更早返回
 }
 
 // ============================================================================
@@ -96,6 +97,11 @@ QPointF GroundTrackWidget::geoToScreen(double latDeg, double lonDeg,
 
 void GroundTrackWidget::paintEvent(QPaintEvent *)
 {
+    if (!m_landLoaded) {
+        m_landLoaded = true;          // 只尝试一次（失败不反复重试）
+        loadLandData();               // 首帧解析陆地轮廓, 之后不再触发
+    }
+
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 

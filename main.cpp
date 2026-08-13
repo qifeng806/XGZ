@@ -8,6 +8,7 @@
 #include <QLockFile>
 #include <QMessageBox>
 #include <QDir>
+#include <QFont>
 #include "ui/MainWindow.h"
 #include "core/models.h"
 

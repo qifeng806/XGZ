@@ -13,6 +13,8 @@
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QHeaderView>
+#include <QDialog>
+#include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTextStream>
@@ -827,8 +829,21 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         const auto &p = passes[i];
         int r = i;
 
+        // 复用既有 item: 过滤/时区切换反复刷新时避免逐格 new QTableWidgetItem
+        // 的分配开销; 复用前复位条件性属性（tooltip/前景色）, 防上一轮残留
+        auto cellItem = [&](int c) -> QTableWidgetItem * {
+            QTableWidgetItem *it = m_passTable->item(r, c);
+            if (!it) {
+                it = new QTableWidgetItem;
+                m_passTable->setItem(r, c, it);
+            }
+            return it;
+        };
         auto setCell = [&](int c, const QString &text) {
-            m_passTable->setItem(r, c, new QTableWidgetItem(text));
+            QTableWidgetItem *it = cellItem(c);
+            it->setText(text);
+            it->setToolTip(QString());
+            it->setForeground(QBrush());
         };
 
         setCell(0,  QString::number(i + 1));
@@ -863,9 +878,9 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         case PassVisibility::RadioOnly: visText = "无线电"; visColor = QColor(0, 100, 180); break;
         case PassVisibility::Daylight:  visText = "白天"; visColor = QColor(150, 150, 150); break;
         }
-        auto *visItem = new QTableWidgetItem(visText);
+        auto *visItem = cellItem(7);
+        visItem->setText(visText);
         visItem->setForeground(visColor);
-        m_passTable->setItem(r, 7, visItem);
 
         setCell(8,  QString::number(p.tcaSunAlt, 'f', 1) + "°");
 
@@ -883,14 +898,15 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         setCell(9, litText);
 
         // 可见弧段子区间（Heavens-Above 语义: 该时段内实际可见）
+        auto *arcTip = cellItem(10);
         if (p.hasVisibleArc) {
-            auto *arcTip = new QTableWidgetItem(
+            arcTip->setText(
                 jdMsToStr(p.visAosJdMs) + " – " + jdMsToStr(p.visLosJdMs));
             arcTip->setToolTip(
                 "几何过境内「暗天 + 被照亮」的连续时段，观测者实际可见范围");
-            m_passTable->setItem(r, 10, arcTip);
         } else {
-            setCell(10, "—");
+            arcTip->setText("—");
+            arcTip->setToolTip(QString());
         }
 
         setCell(11, QString("%1°, %2°, %3km")
@@ -902,15 +918,15 @@ void MainWindow::populateTable(const QVector<PassEvent> &passes)
         setCell(13, QString::number(p.dopplerAtTcaKHz, 'f', 2) + " kHz");
 
         // 星等估算（越小越亮; TCA 时刻）
+        auto *magItem = cellItem(14);
         if (p.magValid) {
-            auto *magItem = new QTableWidgetItem(
-                QString::number(p.magAtTca, 'f', 1));
+            magItem->setText(QString::number(p.magAtTca, 'f', 1));
             magItem->setToolTip(
                 "视星等估算（Vallerie 相位模型），越小越亮\n"
                 "固有星等来自内置目录或输入框回退值，误差 ±1~2 星等");
-            m_passTable->setItem(r, 14, magItem);
         } else {
-            setCell(14, "—");
+            magItem->setText("—");
+            magItem->setToolTip(QString());
         }
 
         QString qualityText;

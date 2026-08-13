@@ -29,6 +29,7 @@ private:
 
     // 真实大陆轮廓（Natural Earth 110m，经度在 [-180,180] 内，无需断片）
     QVector<QPolygonF> m_landPolygons;   // 点 = (latDeg, lonDeg)
+    bool m_landLoaded = false;           // 首次 paint 惰性加载标记
 
     bool loadLandData();                 // 从 :/land110m.txt 加载一次
     QPointF geoToScreen(double latDeg, double lonDeg,
