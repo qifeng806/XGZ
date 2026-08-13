@@ -102,6 +102,19 @@ int main(int argc, char *argv[])
             color: #e0e0e0;
         }
         QProgressBar::chunk { background-color: #4488cc; }
+        /* 弹窗/下拉层: 默认浅色底 + 全局 QLabel{color:#ccc} 会形成低对比,
+           须整体深色化（QMessageBox 按钮复用上方 QPushButton 规则） */
+        QMessageBox, QDialog {
+            background-color: #2b2b2b;
+        }
+        QMessageBox QLabel, QDialog QLabel { color: #e0e0e0; }
+        QComboBox QAbstractItemView {
+            background-color: #2b2b2b;
+            color: #d0d0d0;
+            border: 1px solid #555;
+            selection-background-color: #4488cc;
+            selection-color: #ffffff;
+        }
     )");
 
     MainWindow mainWindow;

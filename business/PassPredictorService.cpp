@@ -171,8 +171,12 @@ void PassPredictorService::finishBatch()
     // emit 前先移动到临时量: 信号参数按值接收, 直接 emit 成员会深拷贝
     // 整批采样向量; 移动后主线程交付只剩队列转发那一份必要拷贝
     QVector<PassEvent> out = std::move(m_batchPasses);
-    emit resultReady(std::move(out));
+    // 置位必须早于 emit: resultReady 在主线程同步触发 onResultsReady,
+    // 其内部模态错误弹窗会开嵌套事件循环——若此时 m_batchFinished 仍为
+    // false, 队列中迟到的单星 metaInfo 会通过守卫并被 onMetaInfo 采用,
+    // 用随机一颗卫星的模型/历元覆盖批量汇总文本
     m_batchFinished = true;   // 收尾: 迟到的单星 metaInfo 不再转发
+    emit resultReady(std::move(out));
 }
 
 void PassPredictorService::cancelAll()

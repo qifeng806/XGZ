@@ -4,7 +4,7 @@
 // 使用 Vallado 官方验证数据集 SGP4-VER.TLE（复制到 tests/data/）:
 //   每个用例: 标准 TLE 两行 + 行尾扩展运行参数 <startmfe> <stopmfe> <deltamin>
 // 验证策略（无 tcppver.out 黄金值时采用不变量校验）:
-//   1) 全部用例初始化成功（短行 Vallado 专用格式除外）
+//   1) 全部用例初始化成功（短行格式用例按设计被显式拒绝）
 //   2) 运行窗口内逐点传播: 正常用例全部成功，已知衰减/错误用例必须出现失败
 //   3) 每个状态满足开普勒不变量（半径在近/远地点范围内、vis-viva 能量一致）
 // =============================================================================
@@ -208,8 +208,8 @@ void TstPropagator::verifyDatasetAllCases()
 
         const std::string norad = c.line1.substr(2, 5);
 
-        // Vallado 数据集中的短行专用用例（11801/88888，<69 字符）:
-        // Propagator 按标准 69 字符显式拒绝，属预期行为
+        // 防御分支: 短行（<69 字符）用例按标准 69 字符格式显式拒绝。
+        // 当前数据集 33 对 TLE 均 ≥69 字符, 该分支实际不触发, 仅作格式盾
         if (c.line1.size() < 69 || c.line2.size() < 69) {
             QVERIFY2(!ok, qPrintable(QString("NORAD %1 短行应被拒绝").arg(norad.c_str())));
             ++rejected;
@@ -343,7 +343,8 @@ void TstPropagator::decayCaseSubOrbital()
 
 void TstPropagator::keplerPeriodicity()
 {
-    // 00005: 133 分钟周期，整周期后位置应回位（SGP4 近圆校验）
+    // 00005: e=0.186 非近圆轨道, 133 分钟周期, 整周期后位置应回位
+    //（周期一致性校验: 传播一个整周期与历元状态对齐）
     const char *L1 = "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753";
     const char *L2 = "2 00005  34.2682 348.7242 1859667 331.7664  19.3264 10.82419157413667";
 

@@ -181,7 +181,9 @@ struct PassEvent {
     double losIllum = 1.0;
 
     // ── 可见弧段子区间（Heavens-Above 语义: 几何过境内同时满足
-    //     "地面暗天 + 卫星被照亮" 的最大连续子区间，观测者实际可见的时间范围）
+    //     "地面暗天 + 卫星被照亮" 的时间范围, 观测者实际可见的时间窗口）;
+    //     单段过境为最大连续子区间; 合并过境（mergeGapSec）时取各段并集,
+    //     可能跨过两段之间低于掩星角的间隙, 属合并语义而非真实连续可见
     int64_t visAosJdMs   = 0;   // 可见弧段起点（毫秒 JD, hasVisibleArc=false 时无效）
     int64_t visLosJdMs   = 0;   // 可见弧段终点
     bool    hasVisibleArc = false;

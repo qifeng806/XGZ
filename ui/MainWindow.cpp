@@ -602,6 +602,12 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, jobs.size());
     m_progressBar->setValue(0);
+    // 批量模式不逐星显示历元（onMetaInfo 直接 return）: 须清掉上次单星
+    // 任务残留的模型/历元显示（可能带红色"数据过期"样式）, 否则批量期间
+    // 状态栏悬挂一颗无关卫星的过期信息, 与"模型: 批量 N 颗"并存产生歧义
+    setStatusText(m_statusModel, "模型: —");
+    setStatusText(m_statusEpoch, "历元: —");
+    m_statusEpoch->setStyleSheet(QString());
     setStatusText(m_statusModel, QString("模型: 批量 %1 颗").arg(jobs.size()));
     if (failed > 0)
         setStatusText(m_statusModel,

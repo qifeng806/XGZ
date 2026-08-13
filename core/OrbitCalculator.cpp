@@ -19,6 +19,10 @@ namespace {
     constexpr double EXTEND_MIN   = 60.0;      // 跨窗口过境延长搜索（分钟）
     constexpr double TCA_REFINE_SEC = 3.0;     // TCA 三分搜索初始半宽（秒）
     constexpr double SEC_PER_DAY  = 86400.0;
+    // 传播失败哨兵: 真实仰角物理下限为 -90°, 该值不可能由观测产生。
+    // 调用方必须用它区分"传播失败"与"真实低于掩星角"——把失败点当真实
+    // LOS/AOS 会把过境错误分裂或截断（瞬态失败时仰角其实仍在掩星角之上）
+    constexpr double ELEV_FAILURE_SENTINEL = -1000.0;
     // 观测站海拔的地平线倾角（度）: dip = acos(r/(r+h)) ≈ 1.0152·sqrt(h_km)。
     // 高海拔站"视地平线"下倾，暗天判定的太阳高度阈值须按此值平移——
     // 否则海拔 1km 山地站在太阳尚高于其视地平时就被误判为暗天
@@ -156,7 +160,7 @@ double OrbitCalculator::elevationAt(PropagateFn &propagate,
                                      const Observer &obs, double jd) const
 {
     auto eciOpt = propagate(jd);
-    if (!eciOpt) return -1000.0;  // 传播失败 → 视为不可见
+    if (!eciOpt) return ELEV_FAILURE_SENTINEL;  // 传播失败 → 调用方按哨兵跳过, 不得视作真实 LOS
 
     auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
     return obs.lookAngle(ecef).elevDeg;
@@ -169,7 +173,7 @@ void OrbitCalculator::computeMoment(PropagateFn &propagate,
 {
     auto eciOpt = propagate(jd);
     if (!eciOpt) {
-        look = LookAngle(-1000.0, 0.0, 0.0);
+        look = LookAngle(ELEV_FAILURE_SENTINEL, 0.0, 0.0);
         geo  = GeoPos(0.0, 0.0, 0.0);
         return;
     }
@@ -343,6 +347,7 @@ double OrbitCalculator::bisectAOS(PropagateFn &propagate,
         if (cancelled()) return lo;   // 取消响应: 二分期间也保持敏感
         double mid = (lo + hi) * 0.5;
         double el = elevationAt(propagate, obs, mid);
+        if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点无可靠仰角: 不缩窗
         if (el < maskEl) lo = mid;
         else             hi = mid;
     }
@@ -360,6 +365,7 @@ double OrbitCalculator::bisectLOS(PropagateFn &propagate,
         if (cancelled()) return lo;
         double mid = (lo + hi) * 0.5;
         double el = elevationAt(propagate, obs, mid);
+        if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点无可靠仰角: 不缩窗
         if (el >= maskEl) lo = mid;
         else              hi = mid;
     }
@@ -375,14 +381,15 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
 {
     double stepDays = m_cfg.maxElevScanStepSec / 86400.0;
     double bestJD = aosJD;
-    double bestEl = -1000.0;
+    double bestEl = ELEV_FAILURE_SENTINEL;
     outJdMs  = 0;       // 取消时保证不输出垃圾值
-    outElDeg = -1000.0; // 取消时保证不输出垃圾值
+    outElDeg = ELEV_FAILURE_SENTINEL; // 取消时保证不输出垃圾值
 
     // 粗扫描
     for (double jd = aosJD; jd <= losJD; jd += stepDays) {
         if (cancelled()) return;
         double el = elevationAt(propagate, obs, jd);
+        if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点不参与峰值竞争
         if (el > bestEl) {
             bestEl = el;
             bestJD = jd;
@@ -403,6 +410,8 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
         double m2 = hi - (hi - lo) / 3.0;
         double el1 = elevationAt(propagate, obs, m1);
         double el2 = elevationAt(propagate, obs, m2);
+        if (el1 == ELEV_FAILURE_SENTINEL || el2 == ELEV_FAILURE_SENTINEL)
+            continue;   // 任一点失败: 不缩窗（避免把失败点当真实峰值）
         if (el1 >= el2) hi = m2;
         else            lo = m1;
     }
@@ -487,44 +496,49 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         if (cancelled() || ++stepsDone > maxSteps) return passes;   // 协作式取消
 
         double el = elevationAt(propagate, observer, jd);
-
-        if (!inPass) {
-            // 检测 AOS ▲
-            if (prevEl < maskEl && el >= maskEl) {
-                inPass = true;
-                candBelow = jd - stepDays;
-                candAbove = jd;
-            } else if (prevEl < maskEl && jd - stepDays >= jdStart) {
-                // 步内短过境探测(4 等分子步): 原实现只探中点, 完全落在
-                // 一个步长内且不跨中点的 10~15s 级短过境会漏检;
-                // 现对 4 个子区间逐段检测连续 ≥掩星角的子段并逐段装配
-                const double sub = stepDays / 4.0;
-                double pb[5] = { prevEl, el, el, el, el };   // 下标0/4 必低于掩星角
-                for (int k = 1; k <= 3; ++k)
-                    pb[k] = elevationAt(propagate, observer, jd - (4 - k) * sub);
-                for (int s = 1; s <= 3; ++s) {
-                    if (pb[s] < maskEl) continue;
-                    int t = s;
-                    while (t < 3 && pb[t + 1] >= maskEl) ++t;
-                    // 连续段 [s, t] 两端(t_{s-1}/t_{t+1})均低于掩星角 → 整段可装配
-                    assemblePass(
-                        bisectAOS(propagate, observer,
-                                  jd - (4 - (s - 1)) * sub, jd - (4 - s) * sub),
-                        bisectLOS(propagate, observer,
-                                  jd - (4 - t) * sub, jd - (4 - (t + 1)) * sub));
-                    s = t;
+        const bool elFailed = (el == ELEV_FAILURE_SENTINEL);
+        // 传播瞬时失败: 无可靠信息, 保持 prevEl 并跳过状态转移/边界检测——
+        // 失败点仰角其实可能仍在掩星角之上, 直接当 LOS 会错误分裂或
+        // 截断过境（EXTEND 假截断亦然）; 仅推进时间不丢采样
+        if (!elFailed) {
+            if (!inPass) {
+                // 检测 AOS ▲
+                if (prevEl < maskEl && el >= maskEl) {
+                    inPass = true;
+                    candBelow = jd - stepDays;
+                    candAbove = jd;
+                } else if (prevEl < maskEl && jd - stepDays >= jdStart) {
+                    // 步内短过境探测(4 等分子步): 原实现只探中点, 完全落在
+                    // 一个步长内且不跨中点的 10~15s 级短过境会漏检;
+                    // 现对 4 个子区间逐段检测连续 ≥掩星角的子段并逐段装配
+                    const double sub = stepDays / 4.0;
+                    double pb[5] = { prevEl, el, el, el, el }; // 下标0/4 必低于掩星角
+                    for (int k = 1; k <= 3; ++k)
+                        pb[k] = elevationAt(propagate, observer, jd - (4 - k) * sub);
+                    for (int s = 1; s <= 3; ++s) {
+                        if (pb[s] < maskEl) continue;
+                        int t = s;
+                        while (t < 3 && pb[t + 1] >= maskEl) ++t;
+                        // 连续段 [s, t] 两端(t_{s-1}/t_{t+1})均低于掩星角 → 整段可装配
+                        assemblePass(
+                            bisectAOS(propagate, observer,
+                                      jd - (4 - (s - 1)) * sub, jd - (4 - s) * sub),
+                            bisectLOS(propagate, observer,
+                                      jd - (4 - t) * sub, jd - (4 - (t + 1)) * sub));
+                        s = t;
+                    }
+                }
+            } else {
+                // 检测 LOS ▼
+                if (prevEl >= maskEl && el < maskEl) {
+                    double jdAOS = bisectAOS(propagate, observer, candBelow, jd);
+                    double jdLOS = bisectLOS(propagate, observer, candAbove, jd);
+                    assemblePass(jdAOS, jdLOS);
+                    inPass = false;
                 }
             }
-        } else {
-            // 检测 LOS ▼
-            if (prevEl >= maskEl && el < maskEl) {
-                double jdAOS = bisectAOS(propagate, observer, candBelow, jd);
-                double jdLOS = bisectLOS(propagate, observer, candAbove, jd);
-                assemblePass(jdAOS, jdLOS);
-                inPass = false;
-            }
+            prevEl = el;
         }
-        prevEl = el;
         if (jd >= jdEnd) break;
     }
 
@@ -537,6 +551,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             if (cancelled()) return passes;
 
             double el = elevationAt(propagate, observer, jd);
+            if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点不触发 LOS 判定
             if (prevEl >= maskEl && el < maskEl) {
                 jdLos = bisectLOS(propagate, observer, candAbove, jd);
                 break;
