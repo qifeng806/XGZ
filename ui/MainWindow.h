@@ -71,10 +71,13 @@ private:
     QVector<PassEvent> m_currentPasses;         // 原始全部过境（唯一所有权）
     QVector<const PassEvent *> m_filteredPasses; // 过滤后（共享指针, 零深拷贝）
 
-    // 导出异步化: 文件写入在 QtConcurrent 线程池执行, 完成回调收尾
+    // 导出异步化: 写盘在 QtConcurrent 线程池直接读共享过境指针执行
+    //（导出期间一切数据变更入口被锁定, 数据不可变, 无需深拷贝快照）
     enum class ExportKind { Csv, Kml, Json };
     void startExport(ExportKind kind, const QString &filePath);
     void onExportFinished();
+    // 计算/下载在途或导出进行中统一禁用导出入口
+    void setExportEnabled(bool on);
     QFutureWatcher<QString> *m_exportWatcher = nullptr;
 
     // 输入控件

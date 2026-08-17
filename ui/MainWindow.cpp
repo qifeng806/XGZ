@@ -95,10 +95,11 @@ private:
 };
 
 // ============================================================================
-// 导出文件写入器（QtConcurrent 线程池执行; 输入为深拷贝快照, 返回错误串,
-// 空串=成功; 仅做纯文件 I/O, 不触碰任何 UI/成员, 无跨线程数据竞争）
+// 导出文件写入器（QtConcurrent 线程池执行; 输入为共享过境指针集,
+// 只读解引用——导出期间所有数据变更入口被 startExport 锁定, 指针必然有效;
+// 返回错误串, 空串=成功; 不触碰任何 UI 成员, 无跨线程数据竞争）
 // ============================================================================
-QString writePassesCsv(const QVector<PassEvent> &passes, const QString &path)
+QString writePassesCsv(const QVector<const PassEvent *> &passes, const QString &path)
 {
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -131,41 +132,41 @@ QString writePassesCsv(const QVector<PassEvent> &passes, const QString &path)
     };
 
     for (int i = 0; i < passes.size(); ++i) {
-        const auto &p = passes[i];
+        const PassEvent *p = passes[i];
         // 可见性文字
         QString visStr = "白天";
-        if (p.visibility == PassVisibility::Visible) visStr = "可见";
-        else if (p.visibility == PassVisibility::RadioOnly) visStr = "无线电";
+        if (p->visibility == PassVisibility::Visible) visStr = "可见";
+        else if (p->visibility == PassVisibility::RadioOnly) visStr = "无线电";
         out << (i + 1) << ","
-            << csvField(QString::fromStdString(p.satelliteName)) << ","
-            << jdToStr(p.aosJdMs) << ","
-            << jdToStr(p.losJdMs) << ","
-            << p.durationSec << ","
-            << p.maxElevDeg << ","
-            << p.tcaElRefracted << ","
-            << p.tcaLook.azDeg << ","
+            << csvField(QString::fromStdString(p->satelliteName)) << ","
+            << jdToStr(p->aosJdMs) << ","
+            << jdToStr(p->losJdMs) << ","
+            << p->durationSec << ","
+            << p->maxElevDeg << ","
+            << p->tcaElRefracted << ","
+            << p->tcaLook.azDeg << ","
             << visStr << ","
-            << p.tcaSunAlt << ","
-            << ((p.tcaSatShadow == ShadowStatus::FullSunlight) ? "日照" :
-                (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "本影") << ","
-            << (p.hasVisibleArc ? jdToStr(p.visAosJdMs) : "") << ","
-            << (p.hasVisibleArc ? jdToStr(p.visLosJdMs) : "") << ","
-            << p.aosSatGeo.latDeg << ","
-            << p.aosSatGeo.lonDeg << ","
-            << p.aosSatGeo.altKm << ","
-            << p.tcaLook.rangeKm << ","
-            << p.dopplerAtTcaKHz << ","
-            << (p.magValid ? QString::number(p.magAtTca, 'f', 1) : "") << ","
-            << ((p.quality == PassQuality::Excellent) ? "优秀" :
-                (p.quality == PassQuality::Good) ? "良好" : "一般") << ","
-            << illumStr(p.aosIllum) << ","
-            << illumStr(p.tcaIllum) << ","
-            << illumStr(p.losIllum) << "\n";
+            << p->tcaSunAlt << ","
+            << ((p->tcaSatShadow == ShadowStatus::FullSunlight) ? "日照" :
+                (p->tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "本影") << ","
+            << (p->hasVisibleArc ? jdToStr(p->visAosJdMs) : "") << ","
+            << (p->hasVisibleArc ? jdToStr(p->visLosJdMs) : "") << ","
+            << p->aosSatGeo.latDeg << ","
+            << p->aosSatGeo.lonDeg << ","
+            << p->aosSatGeo.altKm << ","
+            << p->tcaLook.rangeKm << ","
+            << p->dopplerAtTcaKHz << ","
+            << (p->magValid ? QString::number(p->magAtTca, 'f', 1) : "") << ","
+            << ((p->quality == PassQuality::Excellent) ? "优秀" :
+                (p->quality == PassQuality::Good) ? "良好" : "一般") << ","
+            << illumStr(p->aosIllum) << ","
+            << illumStr(p->tcaIllum) << ","
+            << illumStr(p->losIllum) << "\n";
     }
     return QString();
 }
 
-QString writePassesKml(const QVector<PassEvent> &passes, const QString &path,
+QString writePassesKml(const QVector<const PassEvent *> &passes, const QString &path,
                        double taskLatDeg, double taskLonDeg)
 {
     // KML 是 XML：卫星名可能含 & < > 等特殊字符，必须转义
@@ -190,35 +191,35 @@ QString writePassesKml(const QVector<PassEvent> &passes, const QString &path,
         << "</coordinates></Point>\n</Placemark>\n";
 
     for (int i = 0; i < passes.size(); ++i) {
-        const auto &p = passes[i];
+        const PassEvent *p = passes[i];
         QString desc = QString("Duration: %1 s; Max elev: %2°")
-            .arg(p.durationSec).arg(p.maxElevDeg, 0, 'f', 1);
-        if (p.hasVisibleArc) {
+            .arg(p->durationSec).arg(p->maxElevDeg, 0, 'f', 1);
+        if (p->hasVisibleArc) {
             desc += QString("; Visible: %1 – %2")
-                .arg(QDateTime::fromMSecsSinceEpoch(p.visAosJdMs - 210866760000000LL,
+                .arg(QDateTime::fromMSecsSinceEpoch(p->visAosJdMs - 210866760000000LL,
                                                     QTimeZone::UTC)
                          .toString("HH:mm:ss"))
-                .arg(QDateTime::fromMSecsSinceEpoch(p.visLosJdMs - 210866760000000LL,
+                .arg(QDateTime::fromMSecsSinceEpoch(p->visLosJdMs - 210866760000000LL,
                                                     QTimeZone::UTC)
                          .toString("HH:mm:ss"));
         }
-        if (p.magValid)
-            desc += QString("; Mag: %1").arg(p.magAtTca, 0, 'f', 1);
+        if (p->magValid)
+            desc += QString("; Mag: %1").arg(p->magAtTca, 0, 'f', 1);
         out << "<Placemark>\n"
             << "<name>Pass " << (i + 1) << ": "
-            << xmlEsc(QString::fromStdString(p.satelliteName)) << " "
-            << p.maxElevDeg << "°</name>\n"
+            << xmlEsc(QString::fromStdString(p->satelliteName)) << " "
+            << p->maxElevDeg << "°</name>\n"
             << "<description>" << xmlEsc(desc) << "</description>\n"
             << "<LineString><coordinates>";
         // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点
-        if (p.samples.size() >= 2) {
-            for (const auto &s : p.samples) {
+        if (p->samples.size() >= 2) {
+            for (const auto &s : p->samples) {
                 out << s.geo.lonDeg << "," << s.geo.latDeg << ",0 ";
             }
         } else {
-            out << p.aosSatGeo.lonDeg << "," << p.aosSatGeo.latDeg << ",0 ";
-            out << p.tcaSatGeo.lonDeg << "," << p.tcaSatGeo.latDeg << ",0 ";
-            out << p.losSatGeo.lonDeg << "," << p.losSatGeo.latDeg << ",0 ";
+            out << p->aosSatGeo.lonDeg << "," << p->aosSatGeo.latDeg << ",0 ";
+            out << p->tcaSatGeo.lonDeg << "," << p->tcaSatGeo.latDeg << ",0 ";
+            out << p->losSatGeo.lonDeg << "," << p->losSatGeo.latDeg << ",0 ";
         }
         out << "</coordinates></LineString>\n</Placemark>\n";
     }
@@ -226,37 +227,37 @@ QString writePassesKml(const QVector<PassEvent> &passes, const QString &path,
     return QString();
 }
 
-QString writePassesJson(const QVector<PassEvent> &passes, const QString &path)
+QString writePassesJson(const QVector<const PassEvent *> &passes, const QString &path)
 {
     QJsonArray arr;
-    for (const auto &p : passes) {
+    for (const PassEvent *p : passes) {
         QJsonObject obj;
-        obj["satellite"]   = QString::fromStdString(p.satelliteName);
-        obj["aosJdMs"]     = static_cast<qint64>(p.aosJdMs);
-        obj["losJdMs"]     = static_cast<qint64>(p.losJdMs);
-        obj["tcaJdMs"]     = static_cast<qint64>(p.tcaJdMs);
-        obj["maxElevDeg"]  = p.maxElevDeg;
-        obj["durationSec"] = p.durationSec;
-        obj["visibility"]  = static_cast<int>(p.visibility);
-        obj["quality"]     = static_cast<int>(p.quality);
-        obj["dopplerKHz"]  = p.dopplerAtTcaKHz;
-        obj["aosSunAlt"]   = p.aosSunAlt;
-        obj["aosSatLit"]   = static_cast<int>(p.aosSatShadow);
-        obj["aosIllum"]    = p.aosIllum;
-        obj["tcaIllum"]    = p.tcaIllum;
-        obj["losIllum"]    = p.losIllum;
-        obj["aosLat"]      = p.aosSatGeo.latDeg;
-        obj["aosLon"]      = p.aosSatGeo.lonDeg;
-        obj["aosAltKm"]    = p.aosSatGeo.altKm;
-        obj["aosAzDeg"]    = p.aosLook.azDeg;
-        obj["aosRangeKm"]  = p.aosLook.rangeKm;
-        obj["hasVisibleArc"] = p.hasVisibleArc;
-        if (p.hasVisibleArc) {
-            obj["visAosJdMs"] = static_cast<qint64>(p.visAosJdMs);
-            obj["visLosJdMs"] = static_cast<qint64>(p.visLosJdMs);
+        obj["satellite"]   = QString::fromStdString(p->satelliteName);
+        obj["aosJdMs"]     = static_cast<qint64>(p->aosJdMs);
+        obj["losJdMs"]     = static_cast<qint64>(p->losJdMs);
+        obj["tcaJdMs"]     = static_cast<qint64>(p->tcaJdMs);
+        obj["maxElevDeg"]  = p->maxElevDeg;
+        obj["durationSec"] = p->durationSec;
+        obj["visibility"]  = static_cast<int>(p->visibility);
+        obj["quality"]     = static_cast<int>(p->quality);
+        obj["dopplerKHz"]  = p->dopplerAtTcaKHz;
+        obj["aosSunAlt"]   = p->aosSunAlt;
+        obj["aosSatLit"]   = static_cast<int>(p->aosSatShadow);
+        obj["aosIllum"]    = p->aosIllum;
+        obj["tcaIllum"]    = p->tcaIllum;
+        obj["losIllum"]    = p->losIllum;
+        obj["aosLat"]      = p->aosSatGeo.latDeg;
+        obj["aosLon"]      = p->aosSatGeo.lonDeg;
+        obj["aosAltKm"]    = p->aosSatGeo.altKm;
+        obj["aosAzDeg"]    = p->aosLook.azDeg;
+        obj["aosRangeKm"]  = p->aosLook.rangeKm;
+        obj["hasVisibleArc"] = p->hasVisibleArc;
+        if (p->hasVisibleArc) {
+            obj["visAosJdMs"] = static_cast<qint64>(p->visAosJdMs);
+            obj["visLosJdMs"] = static_cast<qint64>(p->visLosJdMs);
         }
-        obj["magValid"] = p.magValid;
-        if (p.magValid) obj["magAtTca"] = p.magAtTca;
+        obj["magValid"] = p->magValid;
+        if (p->magValid) obj["magAtTca"] = p->magAtTca;
         arr.append(obj);
     }
     QFile file(path);
@@ -498,6 +499,7 @@ void MainWindow::setupConnections()
     connect(m_tleFetcher, &TleFetcher::finished, this, [this]() {
         m_onlineUpdateBtn->setEnabled(true);
         m_onlineUpdateBtn->setText("下载 TLE");
+        setExportEnabled(true);   // 下载结束, 导出入口恢复
         // 下载收尾: 无计算任务（m_batchMode=false）时恢复预报入口与取消按钮。
         // 不用 cancelBtn 状态作守卫: 下载期间取消按钮也处于可用状态
         if (!m_batchMode) {
@@ -557,10 +559,11 @@ void MainWindow::applyFilterAndRefresh()
         for (const auto &p : m_currentPasses)
             m_filteredPasses.append(&p);
     }
-    // 刷新前保存选中行（模型重置会清空当前索引, 事后恢复,
-    // 过滤/时区切换/重新计算结果刷新时保留用户选择, 越界则钳到第 0 行）
+    // 刷新前保存选中行与滚动位置（模型重置后均会丢失, 事后恢复,
+    // 过滤/时区切换/重新计算结果刷新时保留用户视野, 越界自动钳制）
     const int prevRow = (m_tableModel->rowCount() > 0)
         ? m_passTable->currentIndex().row() : -1;
+    const int prevScroll = m_passTable->verticalScrollBar()->value();
     populateTable(m_filteredPasses);
     m_polarPlot->setPasses(m_filteredPasses);
     m_dopplerPlot->setPasses(m_filteredPasses);
@@ -579,6 +582,8 @@ void MainWindow::applyFilterAndRefresh()
             ? prevRow : 0;
         m_passTable->selectRow(row);
     }
+    // 恢复滚动位置（模型重置后滚动条归零; 超界值由视图自动钳制）
+    m_passTable->verticalScrollBar()->setValue(prevScroll);
 }
 
 void MainWindow::setStatusText(QLabel *label, const QString &text)
@@ -614,6 +619,7 @@ void MainWindow::onPredict()
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
     m_onlineUpdateBtn->setEnabled(false);
+    setExportEnabled(false);   // 计算期间导出旧数据无意义, 一并禁用
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, 0);  // 不确定进度
@@ -654,9 +660,10 @@ void MainWindow::onOnlineUpdate()
     if (groupId.isEmpty()) return;
     m_onlineUpdateBtn->setEnabled(false);
     m_onlineUpdateBtn->setText("下载中…");
-    // 下载期间禁止发起预报/批量（防止任务与下载交错）
+    // 下载期间禁止发起预报/批量/导出（防止任务与下载交错, 导出需稳定数据）
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
+    setExportEnabled(false);
     // 取消按钮在下载期间可用: onCancel 会中止在途下载
     m_cancelBtn->setEnabled(true);
     setStatusText(m_statusModel, QString("模型: 正在下载 %1 的 TLE…")
@@ -744,6 +751,7 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
     m_onlineUpdateBtn->setEnabled(false);
+    setExportEnabled(false);   // 批量计算期间导出旧数据无意义, 一并禁用
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setRange(0, jobs.size());
@@ -812,6 +820,7 @@ void MainWindow::onCancel()
     m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+    setExportEnabled(true);
     // 下载流程收尾（cancel() 内已 emit finished，此处为空操作保留语义清晰）
 }
 
@@ -848,6 +857,7 @@ void MainWindow::onClear()
     m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+    setExportEnabled(true);
 }
 
 // ============================================================================
@@ -857,6 +867,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     m_service->cancelAll();      // 立即置协作取消标志, 线程毫秒级退出
     m_tleFetcher->cancel();      // 中止在途下载
+    // 导出线程直接读共享数据: 关窗前必须等待其结束
+    //（本地文件写盘, 有界耗时; 结束后 watcher 随析构安全销毁）
+    if (m_exportWatcher && m_exportWatcher->isRunning())
+        m_exportWatcher->waitForFinished();
     event->accept();
 }
 
@@ -891,6 +905,7 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+    setExportEnabled(true);
 }
 
 void MainWindow::onError(QString msg)
@@ -913,6 +928,7 @@ void MainWindow::onError(QString msg)
     m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
+    setExportEnabled(true);
 }
 
 void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
@@ -951,6 +967,13 @@ void MainWindow::populateTable(const QVector<const PassEvent *> &passes)
 // ============================================================================
 // 导出
 // ============================================================================
+void MainWindow::setExportEnabled(bool on)
+{
+    m_exportCsvBtn->setEnabled(on);
+    m_exportKmlBtn->setEnabled(on);
+    m_exportJsonBtn->setEnabled(on);
+}
+
 void MainWindow::onExportCSV()
 {
     if (m_filteredPasses.isEmpty()) return;
@@ -983,32 +1006,36 @@ void MainWindow::onExportJSON()
 
 void MainWindow::startExport(ExportKind kind, const QString &filePath)
 {
-    // 快照深拷贝: 导出线程只读此快照, 期间主线程可继续计算/关闭窗口,
-    // 不存在跨线程读取 m_filteredPasses / m_currentPasses 的竞态
-    QVector<PassEvent> snapshot;
-    snapshot.reserve(m_filteredPasses.size());
-    for (const PassEvent *p : m_filteredPasses)
-        snapshot.append(*p);
-    const double taskLat = m_taskLatDeg;
-    const double taskLon = m_taskLonDeg;
+    // 计算/下载在途时禁止导出（入口按钮已同步禁用, 此处双保险）:
+    // 导出线程直接读共享过境指针, 要求数据在导出期间不可变
+    if (m_progressBar->isVisible()) return;
 
-    // 写盘期间禁用导出按钮, 防止并发导出互相覆盖/交错
-    m_exportCsvBtn->setEnabled(false);
-    m_exportKmlBtn->setEnabled(false);
-    m_exportJsonBtn->setEnabled(false);
+    // 锁定一切数据变更入口（清除/计算/下载/取消/导出）:
+    // 此后 onResultsReady / onClear 均不可达, m_currentPasses 不可变,
+    // 写盘线程解引用共享指针无悬垂风险, 也无需深拷贝快照（零主线程开销）
+    setExportEnabled(false);
+    m_clearBtn->setEnabled(false);
+    m_predictBtn->setEnabled(false);
+    m_batchImportBtn->setEnabled(false);
+    m_onlineUpdateBtn->setEnabled(false);
+    m_cancelBtn->setEnabled(false);
 
     if (!m_exportWatcher) {
         m_exportWatcher = new QFutureWatcher<QString>(this);
         connect(m_exportWatcher, &QFutureWatcher<QString>::finished,
                 this, &MainWindow::onExportFinished);
     }
+    // 指针向量 COW 浅拷贝（8B/项, 微秒级）: 即使主线程重建 m_filteredPasses
+    // 也不影响本线程的只读视图; 过境对象本身因入口锁定不可变
+    const QVector<const PassEvent *> src = m_filteredPasses;
+    const double taskLat = m_taskLatDeg;
+    const double taskLon = m_taskLonDeg;
     m_exportWatcher->setFuture(
-        QtConcurrent::run([kind, filePath, taskLat, taskLon,
-                           snapshot = std::move(snapshot)]() -> QString {
+        QtConcurrent::run([kind, filePath, taskLat, taskLon, src]() -> QString {
             switch (kind) {
-            case ExportKind::Csv:  return writePassesCsv(snapshot, filePath);
-            case ExportKind::Kml:  return writePassesKml(snapshot, filePath, taskLat, taskLon);
-            case ExportKind::Json: return writePassesJson(snapshot, filePath);
+            case ExportKind::Csv:  return writePassesCsv(src, filePath);
+            case ExportKind::Kml:  return writePassesKml(src, filePath, taskLat, taskLon);
+            case ExportKind::Json: return writePassesJson(src, filePath);
             }
             return QString();
         }));
@@ -1016,10 +1043,14 @@ void MainWindow::startExport(ExportKind kind, const QString &filePath)
 
 void MainWindow::onExportFinished()
 {
-    // 无论成败都恢复导出入口（仅在 watcher 回调, 无泄漏）
-    m_exportCsvBtn->setEnabled(true);
-    m_exportKmlBtn->setEnabled(true);
-    m_exportJsonBtn->setEnabled(true);
+    // 无论成败都恢复全部入口（仅在 watcher 回调, 无泄漏）;
+    // 共享数据指针的生命周期由 startExport 的入口锁定保证
+    setExportEnabled(true);
+    m_clearBtn->setEnabled(true);
+    m_predictBtn->setEnabled(true);
+    m_batchImportBtn->setEnabled(true);
+    m_onlineUpdateBtn->setEnabled(true);
+    m_cancelBtn->setEnabled(false);
     const QString err = m_exportWatcher->result();
     if (!err.isEmpty())
         QMessageBox::warning(this, "导出失败", err);

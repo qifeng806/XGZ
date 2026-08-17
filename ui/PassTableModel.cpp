@@ -14,6 +14,9 @@ PassTableModel::PassTableModel(QObject *parent)
 
 void PassTableModel::setPasses(const QVector<const PassEvent *> &passes)
 {
+    // 指针集合未变（时区切换、同参数重算等）: 跳过全量 reset,
+    // 保留视图滚动位置与当前选中（setTimeZoneOffset 已另行发通知）
+    if (m_passes == passes) return;
     beginResetModel();
     m_passes = passes;
     endResetModel();
