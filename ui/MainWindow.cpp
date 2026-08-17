@@ -25,6 +25,7 @@
 #include <QSplitter>
 #include <QTimeZone>
 #include <QCloseEvent>
+#include <QtConcurrent>   // 导出文件写入异步化（Qt6 属 QtCore, 无需额外模块）
 
 // ============================================================================
 // 批量 TLE 导入辅助（文件局部）
@@ -93,25 +94,176 @@ private:
     QPlainTextEdit *m_edit;
 };
 
-// 表头悬浮提示（M3 修复: setHorizontalHeaderLabels 会重建表头项并丢弃
-// 已有 tooltip, 故每次重建表头后必须重新应用, 否则提示永久丢失）
-void applyHeaderTips(QTableWidget *table)
+// ============================================================================
+// 导出文件写入器（QtConcurrent 线程池执行; 输入为深拷贝快照, 返回错误串,
+// 空串=成功; 仅做纯文件 I/O, 不触碰任何 UI/成员, 无跨线程数据竞争）
+// ============================================================================
+QString writePassesCsv(const QVector<PassEvent> &passes, const QString &path)
 {
-    const QStringList headerTips = {
-        QString(), QString(), QString(), QString(),
-        "过境持续时长", "几何仰角（悬浮显示大气折射后的视仰角）",
-        "TCA 时刻方位角", "光学可见 / 仅无线电 / 白天",
-        "TCA 时刻太阳高度角", "TCA 时刻卫星日照状态（半影带为太阳圆面可见比例）",
-        "几何过境内「暗天 + 被照亮」的连续可见时段",
-        "入境时刻卫星星下点经纬度与高度",
-        "TCA 时刻观测者至卫星斜距", "TCA 时刻多普勒频移",
-        "视星等估算（Vallerie 相位模型），越小越亮",
-        "综合质量评级"
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return QStringLiteral("无法写入文件: %1").arg(path);
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out.setGenerateByteOrderMark(true);
+    out.setLocale(QLocale::c());   // 修复: 默认跟随系统 locale, 逗号小数点的
+                                   // 区域设置下 CSV 数字会被破坏为 "40,5"
+
+    // 表头
+    out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),折射仰角(°),方位角(°),"
+           "可见性,太阳高度(°),卫星光照,可见弧段起点(UTC),可见弧段终点(UTC),"
+           "入境纬度(°),入境经度(°),入境高度(km),"
+           "斜距(km),多普勒(kHz),星等,质量,AOS光照,TCA光照,LOS光照\n";
+
+    auto jdToStr = [](int64_t jdMs) -> QString {
+        qint64 msecs = jdMs - 210866760000000LL;  // JD×86400000 → epoch ms
+        return QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::UTC)
+            .toString("yyyy-MM-dd HH:mm:ss");
     };
-    for (int c = 0; c < headerTips.size(); ++c) {
-        if (!headerTips[c].isEmpty() && table->horizontalHeaderItem(c))
-            table->horizontalHeaderItem(c)->setToolTip(headerTips[c]);
+    auto illumStr = [](double f) -> QString {
+        if (f <= 0.0)      return "0%";
+        if (f >= 1.0)      return "100%";
+        return QString("%1%").arg(static_cast<int>(f * 100.0));
+    };
+    // CSV 字段转义: 卫星名可能含逗号/引号/换行，按 RFC 4180 包裹引号
+    auto csvField = [](const QString &s) -> QString {
+        return "\"" + QString(s).replace('"', "\"\"") + "\"";
+    };
+
+    for (int i = 0; i < passes.size(); ++i) {
+        const auto &p = passes[i];
+        // 可见性文字
+        QString visStr = "白天";
+        if (p.visibility == PassVisibility::Visible) visStr = "可见";
+        else if (p.visibility == PassVisibility::RadioOnly) visStr = "无线电";
+        out << (i + 1) << ","
+            << csvField(QString::fromStdString(p.satelliteName)) << ","
+            << jdToStr(p.aosJdMs) << ","
+            << jdToStr(p.losJdMs) << ","
+            << p.durationSec << ","
+            << p.maxElevDeg << ","
+            << p.tcaElRefracted << ","
+            << p.tcaLook.azDeg << ","
+            << visStr << ","
+            << p.tcaSunAlt << ","
+            << ((p.tcaSatShadow == ShadowStatus::FullSunlight) ? "日照" :
+                (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "本影") << ","
+            << (p.hasVisibleArc ? jdToStr(p.visAosJdMs) : "") << ","
+            << (p.hasVisibleArc ? jdToStr(p.visLosJdMs) : "") << ","
+            << p.aosSatGeo.latDeg << ","
+            << p.aosSatGeo.lonDeg << ","
+            << p.aosSatGeo.altKm << ","
+            << p.tcaLook.rangeKm << ","
+            << p.dopplerAtTcaKHz << ","
+            << (p.magValid ? QString::number(p.magAtTca, 'f', 1) : "") << ","
+            << ((p.quality == PassQuality::Excellent) ? "优秀" :
+                (p.quality == PassQuality::Good) ? "良好" : "一般") << ","
+            << illumStr(p.aosIllum) << ","
+            << illumStr(p.tcaIllum) << ","
+            << illumStr(p.losIllum) << "\n";
     }
+    return QString();
+}
+
+QString writePassesKml(const QVector<PassEvent> &passes, const QString &path,
+                       double taskLatDeg, double taskLonDeg)
+{
+    // KML 是 XML：卫星名可能含 & < > 等特殊字符，必须转义
+    //（名称来自 TLE 名称行或用户粘贴文本，不可信）
+    auto xmlEsc = [](const QString &s) { return s.toHtmlEscaped(); };
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return QStringLiteral("无法写入文件: %1").arg(path);
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        << "<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n"
+        << "<Document>\n"
+        << "<name>XGZ Satellite Passes</name>\n";
+
+    // 标注地面站（使用任务锁定坐标, 与图表/轨迹标记一致, 而非当前输入框值）
+    out << "<Placemark>\n<name>Ground Station</name>\n"
+        << "<Point><coordinates>"
+        << taskLonDeg << "," << taskLatDeg << ",0"
+        << "</coordinates></Point>\n</Placemark>\n";
+
+    for (int i = 0; i < passes.size(); ++i) {
+        const auto &p = passes[i];
+        QString desc = QString("Duration: %1 s; Max elev: %2°")
+            .arg(p.durationSec).arg(p.maxElevDeg, 0, 'f', 1);
+        if (p.hasVisibleArc) {
+            desc += QString("; Visible: %1 – %2")
+                .arg(QDateTime::fromMSecsSinceEpoch(p.visAosJdMs - 210866760000000LL,
+                                                    QTimeZone::UTC)
+                         .toString("HH:mm:ss"))
+                .arg(QDateTime::fromMSecsSinceEpoch(p.visLosJdMs - 210866760000000LL,
+                                                    QTimeZone::UTC)
+                         .toString("HH:mm:ss"));
+        }
+        if (p.magValid)
+            desc += QString("; Mag: %1").arg(p.magAtTca, 0, 'f', 1);
+        out << "<Placemark>\n"
+            << "<name>Pass " << (i + 1) << ": "
+            << xmlEsc(QString::fromStdString(p.satelliteName)) << " "
+            << p.maxElevDeg << "°</name>\n"
+            << "<description>" << xmlEsc(desc) << "</description>\n"
+            << "<LineString><coordinates>";
+        // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点
+        if (p.samples.size() >= 2) {
+            for (const auto &s : p.samples) {
+                out << s.geo.lonDeg << "," << s.geo.latDeg << ",0 ";
+            }
+        } else {
+            out << p.aosSatGeo.lonDeg << "," << p.aosSatGeo.latDeg << ",0 ";
+            out << p.tcaSatGeo.lonDeg << "," << p.tcaSatGeo.latDeg << ",0 ";
+            out << p.losSatGeo.lonDeg << "," << p.losSatGeo.latDeg << ",0 ";
+        }
+        out << "</coordinates></LineString>\n</Placemark>\n";
+    }
+    out << "</Document>\n</kml>\n";
+    return QString();
+}
+
+QString writePassesJson(const QVector<PassEvent> &passes, const QString &path)
+{
+    QJsonArray arr;
+    for (const auto &p : passes) {
+        QJsonObject obj;
+        obj["satellite"]   = QString::fromStdString(p.satelliteName);
+        obj["aosJdMs"]     = static_cast<qint64>(p.aosJdMs);
+        obj["losJdMs"]     = static_cast<qint64>(p.losJdMs);
+        obj["tcaJdMs"]     = static_cast<qint64>(p.tcaJdMs);
+        obj["maxElevDeg"]  = p.maxElevDeg;
+        obj["durationSec"] = p.durationSec;
+        obj["visibility"]  = static_cast<int>(p.visibility);
+        obj["quality"]     = static_cast<int>(p.quality);
+        obj["dopplerKHz"]  = p.dopplerAtTcaKHz;
+        obj["aosSunAlt"]   = p.aosSunAlt;
+        obj["aosSatLit"]   = static_cast<int>(p.aosSatShadow);
+        obj["aosIllum"]    = p.aosIllum;
+        obj["tcaIllum"]    = p.tcaIllum;
+        obj["losIllum"]    = p.losIllum;
+        obj["aosLat"]      = p.aosSatGeo.latDeg;
+        obj["aosLon"]      = p.aosSatGeo.lonDeg;
+        obj["aosAltKm"]    = p.aosSatGeo.altKm;
+        obj["aosAzDeg"]    = p.aosLook.azDeg;
+        obj["aosRangeKm"]  = p.aosLook.rangeKm;
+        obj["hasVisibleArc"] = p.hasVisibleArc;
+        if (p.hasVisibleArc) {
+            obj["visAosJdMs"] = static_cast<qint64>(p.visAosJdMs);
+            obj["visLosJdMs"] = static_cast<qint64>(p.visLosJdMs);
+        }
+        obj["magValid"] = p.magValid;
+        if (p.magValid) obj["magAtTca"] = p.magAtTca;
+        arr.append(obj);
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return QStringLiteral("无法写入文件: %1").arg(path);
+    file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
+    return QString();
 }
 
 } // namespace
@@ -291,14 +443,11 @@ void MainWindow::setupUI()
     // ---- 结果区（三页签） ----
     m_tabWidget = new QTabWidget;
 
-    // 页签 1: 过境列表
-    m_passTable = new QTableWidget;
-    m_passTable->setColumnCount(16);
-    m_passTable->setHorizontalHeaderLabels({
-        "#", "卫星名", "入境(UTC)", "出境(UTC)", "持续",
-        "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
-        "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
-    });
+    // 页签 1: 过境列表（QTableView + 懒加载 model: 仅可见单元格被请求,
+    // 批量过境不再整表构建 QTableWidgetItem——M 修复的刷新卡顿根源）
+    m_tableModel = new PassTableModel(this);
+    m_passTable = new QTableView;
+    m_passTable->setModel(m_tableModel);
     m_passTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     // "卫星名" 与 "可见弧段" 拉伸填充剩余空间, 其余列固定宽度, 避免最右列被拉空
     m_passTable->horizontalHeader()->setSectionResizeMode(1,  QHeaderView::Stretch);
@@ -311,10 +460,6 @@ void MainWindow::setupUI()
     for (int c = 0; c < 16; ++c)
         m_passTable->setColumnWidth(c, colWidths[c]);
     m_passTable->horizontalHeader()->setMinimumSectionSize(45);
-
-    // 表头提示（悬浮说明列语义）——由辅助函数维护，
-    // 表头重建（setHorizontalHeaderLabels）后须重新应用（M3）
-    applyHeaderTips(m_passTable);
     m_passTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_passTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_passTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -378,12 +523,10 @@ void MainWindow::setupConnections()
             });
     connect(m_service, &PassPredictorService::metaInfo,
             this, &MainWindow::onMetaInfo);
-    connect(m_passTable, &QTableWidget::cellClicked,
-            this, &MainWindow::onTableRowSelected);
-    // 键盘方向键/程序化移动也会改变当前单元格, 与鼠标点击统一处理
-    connect(m_passTable, &QTableWidget::currentCellChanged,
-            this, [this](int row, int col, int, int) {
-                onTableRowSelected(row, col);
+    // 点击/键盘方向键/程序化移动统一走 currentRowChanged（model 视图方案）
+    connect(m_passTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
+            this, [this](const QModelIndex &cur, const QModelIndex &) {
+                if (cur.isValid()) onTableRowSelected(cur.row(), 0);
             });
     // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
     connect(m_visibleOnlyCheck, &QCheckBox::toggled, this, [this](bool) {
@@ -403,18 +546,21 @@ void MainWindow::setupConnections()
 void MainWindow::applyFilterAndRefresh()
 {
     if (m_visibleOnlyCheck->isChecked()) {
-        QVector<PassEvent> filtered;
+        QVector<const PassEvent *> filtered;
         for (const auto &p : m_currentPasses)
             if (p.visibility == PassVisibility::Visible)
-                filtered.append(p);
+                filtered.append(&p);
         m_filteredPasses = filtered;
     } else {
-        m_filteredPasses = m_currentPasses;
+        m_filteredPasses.clear();
+        m_filteredPasses.reserve(m_currentPasses.size());
+        for (const auto &p : m_currentPasses)
+            m_filteredPasses.append(&p);
     }
-    // 刷新前保存选中行（setRowCount 会清空当前单元格, 事后恢复,
+    // 刷新前保存选中行（模型重置会清空当前索引, 事后恢复,
     // 过滤/时区切换/重新计算结果刷新时保留用户选择, 越界则钳到第 0 行）
-    const int prevRow = (m_passTable->rowCount() > 0)
-        ? m_passTable->currentRow() : -1;
+    const int prevRow = (m_tableModel->rowCount() > 0)
+        ? m_passTable->currentIndex().row() : -1;
     populateTable(m_filteredPasses);
     m_polarPlot->setPasses(m_filteredPasses);
     m_dopplerPlot->setPasses(m_filteredPasses);
@@ -428,10 +574,10 @@ void MainWindow::applyFilterAndRefresh()
         .arg(m_currentPasses.size()).arg(visCount));
 
     // 恢复选中: 优先保留用户原选择, 越界/无选中时钳到第 0 行
-    if (m_passTable->rowCount() > 0) {
-        const int row = (prevRow >= 0 && prevRow < m_passTable->rowCount())
+    if (m_tableModel->rowCount() > 0) {
+        const int row = (prevRow >= 0 && prevRow < m_tableModel->rowCount())
             ? prevRow : 0;
-        m_passTable->setCurrentCell(row, 0);
+        m_passTable->selectRow(row);
     }
 }
 
@@ -681,7 +827,7 @@ void MainWindow::onClear()
 
     m_tleInput1->clear();
     m_tleInput2->clear();
-    m_passTable->setRowCount(0);
+    m_tableModel->setPasses({});   // 清空懒加载 model
     m_currentPasses.clear();
     m_filteredPasses.clear();   // 过滤结果同步清空（M4: 否则内存滞留过境数据）
     if (m_visibleOnlyCheck->isChecked()) {
@@ -785,7 +931,7 @@ void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
 void MainWindow::onTableRowSelected(int row, int col)
 {
     Q_UNUSED(col);
-    if (row >= 0 && row < m_passTable->rowCount()) {
+    if (row >= 0 && row < m_tableModel->rowCount()) {
         m_polarPlot->setSelectedPass(row);
         m_dopplerPlot->setSelectedPass(row);
         m_groundTrack->setSelectedPass(row);
@@ -793,188 +939,13 @@ void MainWindow::onTableRowSelected(int row, int col)
 }
 
 // ============================================================================
-// 表格填充
+// 表格填充（懒加载: 数据入 model, 视图按需请求单元格）
 // ============================================================================
-void MainWindow::populateTable(const QVector<PassEvent> &passes)
+void MainWindow::populateTable(const QVector<const PassEvent *> &passes)
 {
-    // 单次 setRowCount(n): 自动裁剪/扩充行, 不再先清零再重建
-    //（滤波/时区切换反复刷新时省去全表重建的卡顿）
-    m_passTable->setRowCount(passes.size());
-
-    int tzOffsetSec = m_timezoneCombo->currentData().toInt();
-    QTimeZone displayTz = (tzOffsetSec == 0)
-        ? QTimeZone::UTC
-        : QTimeZone(tzOffsetSec);
-
-    // 表头随所选时区动态变化（H3: 时区下拉框此前为无效控件）
-    const QString tzLabel = (tzOffsetSec == 0)
-        ? QStringLiteral("UTC")
-        : QStringLiteral("UTC%1%2")
-              .arg(tzOffsetSec > 0 ? QStringLiteral("+") : QStringLiteral("-"))
-              .arg(qAbs(tzOffsetSec) / 3600);
-    if (m_passTable->horizontalHeaderItem(2)
-        && m_passTable->horizontalHeaderItem(2)->text() != "入境(" + tzLabel + ")") {
-        m_passTable->setHorizontalHeaderLabels({
-            "#", "卫星名", "入境(" + tzLabel + ")", "出境(" + tzLabel + ")", "持续",
-            "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
-            "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
-        });
-        applyHeaderTips(m_passTable);   // 表头重建后重应用悬浮提示（M3）
-    }
-
-    auto jdMsToStr = [&displayTz](int64_t jdMs) -> QString {
-        // JD×86400000 毫秒 → 1970 epoch 毫秒（纯整数运算，无舍入/精度损失）
-        qint64 msecs = jdMs - 210866760000000LL;  // 2440587.5 × 86400000
-        QDateTime dt = QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::UTC);
-        if (displayTz != QTimeZone::UTC)
-            dt = dt.toTimeZone(displayTz);
-        return dt.toString("HH:mm:ss");
-    };
-
-    for (int i = 0; i < passes.size(); ++i) {
-        const auto &p = passes[i];
-        int r = i;
-
-        // 复用既有 item: 过滤/时区切换反复刷新时避免逐格 new QTableWidgetItem
-        // 的分配开销; 复用前复位条件性属性（tooltip/前景色）, 防上一轮残留
-        auto cellItem = [&](int c) -> QTableWidgetItem * {
-            QTableWidgetItem *it = m_passTable->item(r, c);
-            if (!it) {
-                it = new QTableWidgetItem;
-                m_passTable->setItem(r, c, it);
-            }
-            return it;
-        };
-        auto setCell = [&](int c, const QString &text) {
-            QTableWidgetItem *it = cellItem(c);
-            it->setText(text);
-            it->setToolTip(QString());
-            it->setForeground(QBrush());
-        };
-
-        setCell(0,  QString::number(i + 1));
-        setCell(1,  QString::fromStdString(p.satelliteName));
-        setCell(2,  jdMsToStr(p.aosJdMs));
-        setCell(3,  jdMsToStr(p.losJdMs));
-        setCell(4,  QString("%1s%2")
-                .arg(static_cast<int>(p.durationSec))
-                .arg(p.truncated ? " *" : ""));
-        // 截断过境: 过境延续至预测窗口外, 出境时刻并非真实值
-        if (p.truncated) {
-            auto *durItem = m_passTable->item(r, 4);
-            if (durItem)
-                durItem->setToolTip("过境延续至预测窗口结束时刻（真实出境在窗口外, 持续时长被截断）");
-        }
-        setCell(5,  QString::number(p.maxElevDeg, 'f', 1) + "°");
-
-        // 大气折射后的视仰角（几何仰角带过 tooltip 展示，仅显示用；
-        // AOS/LOS 判定仍用几何仰角）
-        auto *elTipItem = m_passTable->item(r, 5);
-        if (elTipItem && p.tcaElRefracted > 0.0) {
-            elTipItem->setToolTip(
-                QString("折射后最大仰角: %1°").arg(p.tcaElRefracted, 0, 'f', 1));
-        }
-        setCell(6,  QString::number(p.tcaLook.azDeg, 'f', 1) + "°");
-
-        // 可见性
-        QString visText;
-        QColor visColor;
-        switch (p.visibility) {
-        case PassVisibility::Visible:   visText = "可见"; visColor = QColor(0, 150, 0); break;
-        case PassVisibility::RadioOnly: visText = "无线电"; visColor = QColor(0, 100, 180); break;
-        case PassVisibility::Daylight:  visText = "白天"; visColor = QColor(150, 150, 150); break;
-        }
-        auto *visItem = cellItem(7);
-        visItem->setText(visText);
-        visItem->setForeground(visColor);
-
-        setCell(8,  QString::number(p.tcaSunAlt, 'f', 1) + "°");
-
-        // 卫星光照: 阴影状态 + TCA 时刻太阳圆面可见比例（半影带内 1~99%）
-        QString litText;
-        switch (p.tcaSatShadow) {
-        case ShadowStatus::FullSunlight: litText = "日照"; break;
-        case ShadowStatus::InPenumbra:
-            // 边界值 tcaIllum==1.0（理论刚出半影）显示 100% 而非钳制的 99%,
-            // 与"日照"分类在界线上衔接一致
-            litText = QString("半影 %1%").arg(qBound(1, static_cast<int>(p.tcaIllum * 100.0), 100));
-            break;
-        case ShadowStatus::InUmbra:      litText = "本影"; break;
-        }
-        setCell(9, litText);
-
-        // 可见弧段子区间（Heavens-Above 语义: 该时段内实际可见）
-        auto *arcTip = cellItem(10);
-        if (p.hasVisibleArc) {
-            arcTip->setText(
-                jdMsToStr(p.visAosJdMs) + " – " + jdMsToStr(p.visLosJdMs));
-            arcTip->setToolTip(
-                "几何过境内「暗天 + 被照亮」的连续时段，观测者实际可见范围");
-        } else {
-            arcTip->setText("—");
-            arcTip->setToolTip(QString());
-        }
-
-        setCell(11, QString("%1°, %2°, %3km")
-            .arg(p.aosSatGeo.latDeg, 0, 'f', 1)
-            .arg(p.aosSatGeo.lonDeg, 0, 'f', 1)
-            .arg(p.aosSatGeo.altKm, 0, 'f', 0));
-
-        setCell(12, QString::number(p.tcaLook.rangeKm, 'f', 0) + " km");
-        setCell(13, QString::number(p.dopplerAtTcaKHz, 'f', 2) + " kHz");
-
-        // 星等估算（越小越亮; TCA 时刻）
-        auto *magItem = cellItem(14);
-        if (p.magValid) {
-            magItem->setText(QString::number(p.magAtTca, 'f', 1));
-            magItem->setToolTip(
-                "视星等估算（Vallerie 相位模型），越小越亮\n"
-                "固有星等来自内置目录或输入框回退值，误差 ±1~2 星等");
-        } else {
-            magItem->setText("—");
-            magItem->setToolTip(QString());
-        }
-
-        QString qualityText;
-        switch (p.quality) {
-        case PassQuality::Excellent: qualityText = "★★★"; break;
-        case PassQuality::Good:      qualityText = "★★";  break;
-        case PassQuality::Poor:      qualityText = "★";   break;
-        }
-        setCell(15, qualityText);
-
-        // 列对齐: 数值右对齐、状态居中、文本左对齐
-        static const Qt::Alignment aligns[16] = {
-            Qt::AlignCenter,                   /* # */
-            Qt::AlignLeft  | Qt::AlignVCenter, /* 卫星名 */
-            Qt::AlignLeft  | Qt::AlignVCenter, /* 入境 */
-            Qt::AlignLeft  | Qt::AlignVCenter, /* 出境 */
-            Qt::AlignCenter,                   /* 持续 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 最大仰角 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 方位角 */
-            Qt::AlignCenter,                   /* 可见性 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 太阳高度 */
-            Qt::AlignCenter,                   /* 卫星光照 */
-            Qt::AlignCenter,                   /* 可见弧段 */
-            Qt::AlignLeft  | Qt::AlignVCenter, /* 入境位置 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 斜距 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 多普勒 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 星等 */
-            Qt::AlignCenter                    /* 质量 */
-        };
-        for (int c = 0; c < 16; ++c) {
-            if (auto *it = m_passTable->item(r, c))
-                it->setTextAlignment(aligns[c]);
-        }
-
-        // 最大仰角颜色
-        auto *elItem = m_passTable->item(r, 5);
-        if (elItem) {
-            if (p.maxElevDeg >= 50.0)      elItem->setForeground(QColor(0, 160, 0));
-            else if (p.maxElevDeg >= 20.0) elItem->setForeground(QColor(200, 150, 0));
-            else                           elItem->setForeground(QColor(200, 80, 0));
-        }
-    }
+    // 时区表头/时间列由 model 响应 setTimeZoneOffset 自动刷新
+    m_tableModel->setTimeZoneOffset(m_timezoneCombo->currentData().toInt());
+    m_tableModel->setPasses(passes);
 }
 
 // ============================================================================
@@ -987,70 +958,7 @@ void MainWindow::onExportCSV()
         "passes_" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd") + ".csv",
         "CSV Files (*.csv)");
     if (filePath.isEmpty()) return;
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out.setGenerateByteOrderMark(true);
-    out.setLocale(QLocale::c());   // 修复: 默认跟随系统 locale, 逗号小数点的
-                                   // 区域设置下 CSV 数字会被破坏为 "40,5"
-
-    // 表头
-    out << "#,卫星名,入境(UTC),出境(UTC),持续(s),最大仰角(°),折射仰角(°),方位角(°),"
-           "可见性,太阳高度(°),卫星光照,可见弧段起点(UTC),可见弧段终点(UTC),"
-           "入境纬度(°),入境经度(°),入境高度(km),"
-           "斜距(km),多普勒(kHz),星等,质量,AOS光照,TCA光照,LOS光照\n";
-
-    for (int i = 0; i < m_filteredPasses.size(); ++i) {
-        const auto &p = m_filteredPasses[i];
-        auto jdToStr = [](int64_t jdMs) -> QString {
-            qint64 msecs = jdMs - 210866760000000LL;  // JD×86400000 → epoch ms
-            return QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::UTC)
-                .toString("yyyy-MM-dd HH:mm:ss");
-        };
-        // 可见性文字
-        QString visStr = "白天";
-        if (p.visibility == PassVisibility::Visible) visStr = "可见";
-        else if (p.visibility == PassVisibility::RadioOnly) visStr = "无线电";
-        auto illumStr = [](double f) -> QString {
-            if (f <= 0.0)      return "0%";
-            if (f >= 1.0)      return "100%";
-            return QString("%1%").arg(static_cast<int>(f * 100.0));
-        };
-        // CSV 字段转义: 卫星名可能含逗号/引号/换行，按 RFC 4180 包裹引号
-        auto csvField = [](const QString &s) -> QString {
-            return "\"" + QString(s).replace('"', "\"\"") + "\"";
-        };
-        out << (i + 1) << ","
-            << csvField(QString::fromStdString(p.satelliteName)) << ","
-            << jdToStr(p.aosJdMs) << ","
-            << jdToStr(p.losJdMs) << ","
-            << p.durationSec << ","
-            << p.maxElevDeg << ","
-            << p.tcaElRefracted << ","
-            << p.tcaLook.azDeg << ","
-            << visStr << ","
-            << p.tcaSunAlt << ","
-            << ((p.tcaSatShadow == ShadowStatus::FullSunlight) ? "日照" :
-                (p.tcaSatShadow == ShadowStatus::InPenumbra) ? "半影" : "本影") << ","
-            << (p.hasVisibleArc ? jdToStr(p.visAosJdMs) : "") << ","
-            << (p.hasVisibleArc ? jdToStr(p.visLosJdMs) : "") << ","
-            << p.aosSatGeo.latDeg << ","
-            << p.aosSatGeo.lonDeg << ","
-            << p.aosSatGeo.altKm << ","
-            << p.tcaLook.rangeKm << ","
-            << p.dopplerAtTcaKHz << ","
-            << (p.magValid ? QString::number(p.magAtTca, 'f', 1) : "") << ","
-            << ((p.quality == PassQuality::Excellent) ? "优秀" :
-                (p.quality == PassQuality::Good) ? "良好" : "一般") << ","
-            << illumStr(p.aosIllum) << ","
-            << illumStr(p.tcaIllum) << ","
-            << illumStr(p.losIllum) << "\n";
-    }
+    startExport(ExportKind::Csv, filePath);
 }
 
 void MainWindow::onExportKML()
@@ -1060,64 +968,7 @@ void MainWindow::onExportKML()
         "passes_" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd") + ".kml",
         "KML Files (*.kml)");
     if (filePath.isEmpty()) return;
-
-    // KML 是 XML：卫星名可能含 & < > 等特殊字符，必须转义
-    //（名称来自 TLE 名称行或用户粘贴文本，不可信）
-    auto xmlEsc = [](const QString &s) { return s.toHtmlEscaped(); };
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-
-    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        << "<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n"
-        << "<Document>\n"
-        << "<name>XGZ Satellite Passes</name>\n";
-
-    // 标注地面站（使用任务锁定坐标, 与图表/轨迹标记一致, 而非当前输入框值）
-    out << "<Placemark>\n<name>Ground Station</name>\n"
-        << "<Point><coordinates>"
-        << m_taskLonDeg << "," << m_taskLatDeg << ",0"
-        << "</coordinates></Point>\n</Placemark>\n";
-
-    for (int i = 0; i < m_filteredPasses.size(); ++i) {
-        const auto &p = m_filteredPasses[i];
-        QString desc = QString("Duration: %1 s; Max elev: %2°")
-            .arg(p.durationSec).arg(p.maxElevDeg, 0, 'f', 1);
-        if (p.hasVisibleArc) {
-            desc += QString("; Visible: %1 – %2")
-                .arg(QDateTime::fromMSecsSinceEpoch(p.visAosJdMs - 210866760000000LL,
-                                                    QTimeZone::UTC)
-                         .toString("HH:mm:ss"))
-                .arg(QDateTime::fromMSecsSinceEpoch(p.visLosJdMs - 210866760000000LL,
-                                                    QTimeZone::UTC)
-                         .toString("HH:mm:ss"));
-        }
-        if (p.magValid)
-            desc += QString("; Mag: %1").arg(p.magAtTca, 0, 'f', 1);
-        out << "<Placemark>\n"
-            << "<name>Pass " << (i + 1) << ": "
-            << xmlEsc(QString::fromStdString(p.satelliteName)) << " "
-            << p.maxElevDeg << "°</name>\n"
-            << "<description>" << xmlEsc(desc) << "</description>\n"
-            << "<LineString><coordinates>";
-        // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点
-        if (p.samples.size() >= 2) {
-            for (const auto &s : p.samples) {
-                out << s.geo.lonDeg << "," << s.geo.latDeg << ",0 ";
-            }
-        } else {
-            out << p.aosSatGeo.lonDeg << "," << p.aosSatGeo.latDeg << ",0 ";
-            out << p.tcaSatGeo.lonDeg << "," << p.tcaSatGeo.latDeg << ",0 ";
-            out << p.losSatGeo.lonDeg << "," << p.losSatGeo.latDeg << ",0 ";
-        }
-        out << "</coordinates></LineString>\n</Placemark>\n";
-    }
-    out << "</Document>\n</kml>\n";
+    startExport(ExportKind::Kml, filePath);
 }
 
 void MainWindow::onExportJSON()
@@ -1127,45 +978,51 @@ void MainWindow::onExportJSON()
         "passes_" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd") + ".json",
         "JSON Files (*.json)");
     if (filePath.isEmpty()) return;
+    startExport(ExportKind::Json, filePath);
+}
 
-    QJsonArray arr;
-    for (const auto &p : m_filteredPasses) {
-        QJsonObject obj;
-        obj["satellite"]   = QString::fromStdString(p.satelliteName);
-        obj["aosJdMs"]     = static_cast<qint64>(p.aosJdMs);
-        obj["losJdMs"]     = static_cast<qint64>(p.losJdMs);
-        obj["tcaJdMs"]     = static_cast<qint64>(p.tcaJdMs);
-        obj["maxElevDeg"]  = p.maxElevDeg;
-        obj["durationSec"] = p.durationSec;
-        obj["visibility"]  = static_cast<int>(p.visibility);
-        obj["quality"]     = static_cast<int>(p.quality);
-        obj["dopplerKHz"]  = p.dopplerAtTcaKHz;
-        obj["aosSunAlt"]   = p.aosSunAlt;
-        obj["aosSatLit"]   = static_cast<int>(p.aosSatShadow);
-        obj["aosIllum"]    = p.aosIllum;
-        obj["tcaIllum"]    = p.tcaIllum;
-        obj["losIllum"]    = p.losIllum;
-        obj["aosLat"]      = p.aosSatGeo.latDeg;
-        obj["aosLon"]      = p.aosSatGeo.lonDeg;
-        obj["aosAltKm"]    = p.aosSatGeo.altKm;
-        obj["aosAzDeg"]    = p.aosLook.azDeg;
-        obj["aosRangeKm"]  = p.aosLook.rangeKm;
-        obj["hasVisibleArc"] = p.hasVisibleArc;
-        if (p.hasVisibleArc) {
-            obj["visAosJdMs"] = static_cast<qint64>(p.visAosJdMs);
-            obj["visLosJdMs"] = static_cast<qint64>(p.visLosJdMs);
-        }
-        obj["magValid"] = p.magValid;
-        if (p.magValid) obj["magAtTca"] = p.magAtTca;
-        arr.append(obj);
+void MainWindow::startExport(ExportKind kind, const QString &filePath)
+{
+    // 快照深拷贝: 导出线程只读此快照, 期间主线程可继续计算/关闭窗口,
+    // 不存在跨线程读取 m_filteredPasses / m_currentPasses 的竞态
+    QVector<PassEvent> snapshot;
+    snapshot.reserve(m_filteredPasses.size());
+    for (const PassEvent *p : m_filteredPasses)
+        snapshot.append(*p);
+    const double taskLat = m_taskLatDeg;
+    const double taskLon = m_taskLonDeg;
+
+    // 写盘期间禁用导出按钮, 防止并发导出互相覆盖/交错
+    m_exportCsvBtn->setEnabled(false);
+    m_exportKmlBtn->setEnabled(false);
+    m_exportJsonBtn->setEnabled(false);
+
+    if (!m_exportWatcher) {
+        m_exportWatcher = new QFutureWatcher<QString>(this);
+        connect(m_exportWatcher, &QFutureWatcher<QString>::finished,
+                this, &MainWindow::onExportFinished);
     }
-    QJsonDocument doc(arr);
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this, "导出失败", "无法写入文件: " + filePath);
-        return;
-    }
-    file.write(doc.toJson(QJsonDocument::Indented));
+    m_exportWatcher->setFuture(
+        QtConcurrent::run([kind, filePath, taskLat, taskLon,
+                           snapshot = std::move(snapshot)]() -> QString {
+            switch (kind) {
+            case ExportKind::Csv:  return writePassesCsv(snapshot, filePath);
+            case ExportKind::Kml:  return writePassesKml(snapshot, filePath, taskLat, taskLon);
+            case ExportKind::Json: return writePassesJson(snapshot, filePath);
+            }
+            return QString();
+        }));
+}
+
+void MainWindow::onExportFinished()
+{
+    // 无论成败都恢复导出入口（仅在 watcher 回调, 无泄漏）
+    m_exportCsvBtn->setEnabled(true);
+    m_exportKmlBtn->setEnabled(true);
+    m_exportJsonBtn->setEnabled(true);
+    const QString err = m_exportWatcher->result();
+    if (!err.isEmpty())
+        QMessageBox::warning(this, "导出失败", err);
 }
 
 // ============================================================================

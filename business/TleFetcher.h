@@ -13,6 +13,8 @@
 #include <QNetworkReply>
 #include <QString>
 
+class QTimer;
+
 class TleFetcher : public QObject {
     Q_OBJECT
 public:
@@ -50,6 +52,9 @@ private:
     QNetworkReply *m_reply = nullptr;
     QString m_pendingTag;
     bool m_cancelled = false;   // 取消请求后静默忽略迟到回复
+    // 超时看门狗: setTransferTimeout 在部分平台对 DNS 解析/建连挂起不生效,
+    // 用单发定时器兜底——到期仍未完成即中止并以超时错误上报
+    QTimer *m_timeoutTimer = nullptr;
 };
 
 #endif // BUSINESS_TLEFETCHER_H

@@ -186,7 +186,8 @@ void OrbitCalculator::computeMoment(PropagateFn &propagate,
 void OrbitCalculator::collectSamples(PropagateFn &propagate,
                                       const Observer &obs,
                                       double jdAOS, double jdLOS,
-                                      PassEvent &ev) const
+                                      PassEvent &ev,
+                                      const std::atomic<bool> *cancel) const
 {
     if (!m_cfg.enableSamples || m_cfg.sampleStepSec <= 0.0) return;
     const double step = m_cfg.sampleStepSec / 86400.0;
@@ -197,7 +198,7 @@ void OrbitCalculator::collectSamples(PropagateFn &propagate,
     ev.samples.reserve(static_cast<size_t>(n) + 2);
     // 传播一次完成全部字段（含多普勒），避免对同一时刻二次传播
     for (double jd = jdAOS; jd <= jdLOS + 1e-12; jd += step) {
-        if (cancelled()) return;
+        if (isCancelled(cancel)) return;
         auto eciOpt = propagate(jd);
         LookAngle look;
         GeoPos    geo;
@@ -226,7 +227,8 @@ void OrbitCalculator::collectSamples(PropagateFn &propagate,
 void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
                                         const Observer &obs,
                                         double jdAOS, double jdLOS,
-                                        PassEvent &ev) const
+                                        PassEvent &ev,
+                                        const std::atomic<bool> *cancel) const
 {
     if (!m_cfg.enableVisArc || !m_cfg.enableSunAnalysis
         || !m_cfg.enableShadowCheck || m_cfg.sampleStepSec <= 0.0) return;
@@ -237,7 +239,7 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
 
     // t 时刻是否"可观测": 地面暗天 且 卫星被照亮（光照圆面 > 50%）
     auto visibleAt = [&](double jd) -> bool {
-        if (cancelled()) return false;
+        if (isCancelled(cancel)) return false;
         auto sun = SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
         if (sun.altDeg >= dark) return false;
         auto eciOpt = propagate(jd);
@@ -254,7 +256,7 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     // 可见性相同即退化为返回区间端点（真实可见段的成员），不做错误精化
     auto refineBoundary = [&](double jdLo, double jdHi) -> double {
         for (int i = 0; i < m_cfg.bisectionIters; ++i) {
-            if (cancelled()) return jdLo;
+            if (isCancelled(cancel)) return jdLo;
             bool vLo = visibleAt(jdLo);
             bool vHi = visibleAt(jdHi);
             if (vLo == vHi) return jdLo;   // 多翻转: 不精化, 返回端点
@@ -336,7 +338,8 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
 // ========== 二分精化 AOS ==========
 double OrbitCalculator::bisectAOS(PropagateFn &propagate,
                                    const Observer &obs,
-                                   double jdBelow, double jdAbove) const
+                                   double jdBelow, double jdAbove,
+                                   const std::atomic<bool> *cancel) const
 {
     double maskEl = obs.minElevDeg();
     // 跨窗口过境: 下界处仰角已在掩星角之上（AOS 在窗口起点之前）→ 直接取窗口起点
@@ -344,7 +347,7 @@ double OrbitCalculator::bisectAOS(PropagateFn &propagate,
         return jdBelow;
     double lo = jdBelow, hi = jdAbove;
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
-        if (cancelled()) return lo;   // 取消响应: 二分期间也保持敏感
+        if (isCancelled(cancel)) return lo;   // 取消响应: 二分期间也保持敏感
         double mid = (lo + hi) * 0.5;
         double el = elevationAt(propagate, obs, mid);
         if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点无可靠仰角: 不缩窗
@@ -357,12 +360,13 @@ double OrbitCalculator::bisectAOS(PropagateFn &propagate,
 // ========== 二分精化 LOS ==========
 double OrbitCalculator::bisectLOS(PropagateFn &propagate,
                                    const Observer &obs,
-                                   double jdAbove, double jdBelow) const
+                                   double jdAbove, double jdBelow,
+                                   const std::atomic<bool> *cancel) const
 {
     double maskEl = obs.minElevDeg();
     double lo = jdAbove, hi = jdBelow;
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
-        if (cancelled()) return lo;
+        if (isCancelled(cancel)) return lo;
         double mid = (lo + hi) * 0.5;
         double el = elevationAt(propagate, obs, mid);
         if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点无可靠仰角: 不缩窗
@@ -377,7 +381,8 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
                                const Observer &obs,
                                double aosJD, double losJD,
                                int64_t &outJdMs, double &outElDeg,
-                               LookAngle &outLook, GeoPos &outGeo) const
+                               LookAngle &outLook, GeoPos &outGeo,
+                               const std::atomic<bool> *cancel) const
 {
     double stepDays = m_cfg.maxElevScanStepSec / 86400.0;
     double bestJD = aosJD;
@@ -387,7 +392,7 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
 
     // 粗扫描
     for (double jd = aosJD; jd <= losJD; jd += stepDays) {
-        if (cancelled()) return;
+        if (isCancelled(cancel)) return;
         double el = elevationAt(propagate, obs, jd);
         if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点不参与峰值竞争
         if (el > bestEl) {
@@ -405,7 +410,7 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
     double lo = std::max(bestJD - delta, aosJD);
     double hi = std::min(bestJD + delta, losJD);
     for (int i = 0; i < m_cfg.bisectionIters; ++i) {
-        if (cancelled()) return;
+        if (isCancelled(cancel)) return;
         double m1 = lo + (hi - lo) / 3.0;
         double m2 = hi - (hi - lo) / 3.0;
         double el1 = elevationAt(propagate, obs, m1);
@@ -441,14 +446,6 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     const double maskEl   = observer.minElevDeg();
     std::vector<PassEvent> passes;
 
-    m_cancel = cancel;
-    // RAII: 任意退出路径（含取消提前返回）后清空成员指针，
-    // 防调用方销毁 cancel 目标后对象被复用时读到悬垂指针
-    struct CancelReset {
-        std::atomic<const std::atomic<bool> *> &ref;
-        ~CancelReset() { ref = nullptr; }
-    } cancelReset{m_cancel};
-
     // 初始状态: 若窗口起点已在掩星角之上，视为过境中（AOS 在窗口前，用窗口起点作下界）
     double el0 = elevationAt(propagate, observer, jdStart);
     bool   inPass     = (el0 >= maskEl);
@@ -469,20 +466,20 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         ev.aosJdMs = jdToIntMs(jdAOS);
         // TCA（findTCA 内部取消时输出已知哨兵值，这里再检查一次取消）
         findTCA(propagate, observer, jdAOS, jdLOS,
-                ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo);
-        if (cancelled()) return false;
+                ev.tcaJdMs, ev.maxElevDeg, ev.tcaLook, ev.tcaSatGeo, cancel);
+        if (isCancelled(cancel)) return false;
         // 防御: 精化峰值仍低于掩星角（数值异常/传播抖动）时整段丢弃，
         // 防止 findTCA 抖出 -1000 级别的垃圾过境（L-1）
         if (ev.maxElevDeg < maskEl) return false;
         computeMoment(propagate, observer, jdLOS, ev.losLook, ev.losSatGeo);
         ev.losJdMs = jdToIntMs(jdLOS);
         ev.durationSec = durSec;
-        collectSamples(propagate, observer, jdAOS, jdLOS, ev);
+        collectSamples(propagate, observer, jdAOS, jdLOS, ev, cancel);
         ev.satelliteName = m_satName;
         fillPassDetails(ev, propagate, observer, m_cfg, jdAOS,
                         intMsToJd(ev.tcaJdMs), jdLOS);
         collectVisibleArc(propagate, observer, jdAOS,
-                          intMsToJd(ev.losJdMs), ev);
+                          intMsToJd(ev.losJdMs), ev, cancel);
         passes.push_back(ev);
         return true;
     };
@@ -493,7 +490,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         hoursAhead * 86400.0 / std::max(m_cfg.coarseStepSec, 1e-6))) + 2;
     int64_t stepsDone = 0;
     for (double jd = jdStart;; jd += stepDays) {
-        if (cancelled() || ++stepsDone > maxSteps) return passes;   // 协作式取消
+        if (isCancelled(cancel) || ++stepsDone > maxSteps) return passes;   // 协作式取消
 
         double el = elevationAt(propagate, observer, jd);
         const bool elFailed = (el == ELEV_FAILURE_SENTINEL);
@@ -519,20 +516,24 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                         if (pb[s] < maskEl) continue;
                         int t = s;
                         while (t < 3 && pb[t + 1] >= maskEl) ++t;
-                        // 连续段 [s, t] 两端(t_{s-1}/t_{t+1})均低于掩星角 → 整段可装配
-                        assemblePass(
-                            bisectAOS(propagate, observer,
-                                      jd - (4 - (s - 1)) * sub, jd - (4 - s) * sub),
-                            bisectLOS(propagate, observer,
-                                      jd - (4 - t) * sub, jd - (4 - (t + 1)) * sub));
-                        s = t;
+// 连续段 [s, t] 两端(t_{s-1}/t_{t+1})均低于掩星角 → 整段可装配
+                    assemblePass(
+                        bisectAOS(propagate, observer,
+                                  jd - (4 - (s - 1)) * sub, jd - (4 - s) * sub,
+                                  cancel),
+                        bisectLOS(propagate, observer,
+                                  jd - (4 - t) * sub, jd - (4 - (t + 1)) * sub,
+                                  cancel));
+                    s = t;
                     }
                 }
             } else {
                 // 检测 LOS ▼
                 if (prevEl >= maskEl && el < maskEl) {
-                    double jdAOS = bisectAOS(propagate, observer, candBelow, jd);
-                    double jdLOS = bisectLOS(propagate, observer, candAbove, jd);
+                    double jdAOS = bisectAOS(propagate, observer,
+                                             candBelow, jd, cancel);
+                    double jdLOS = bisectLOS(propagate, observer,
+                                             candAbove, jd, cancel);
                     assemblePass(jdAOS, jdLOS);
                     inPass = false;
                 }
@@ -548,12 +549,12 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         double jdExtend = jdEnd + EXTEND_MIN / 1440.0;
         double jdLos = -1.0;
         for (double jd = jdEnd; jd < jdExtend; jd += stepDays) {
-            if (cancelled()) return passes;
+            if (isCancelled(cancel)) return passes;
 
             double el = elevationAt(propagate, observer, jd);
             if (el == ELEV_FAILURE_SENTINEL) continue;   // 失败点不触发 LOS 判定
             if (prevEl >= maskEl && el < maskEl) {
-                jdLos = bisectLOS(propagate, observer, candAbove, jd);
+                jdLos = bisectLOS(propagate, observer, candAbove, jd, cancel);
                 break;
             }
             prevEl = el;
@@ -566,12 +567,12 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         if (jdLos < 0.0)
             jdLos = jdExtend;
 
-        double jdAOS = bisectAOS(propagate, observer, candBelow, jdLos);
+        double jdAOS = bisectAOS(propagate, observer, candBelow, jdLos, cancel);
         assemblePass(jdAOS, jdLos, truncated);
     }
 
     // ---- 合并相邻过境 ----
-    if (!cancelled() && passes.size() > 1 && m_cfg.mergeGapSec > 0.0) {
+    if (!isCancelled(cancel) && passes.size() > 1 && m_cfg.mergeGapSec > 0.0) {
         const double gapDays = m_cfg.mergeGapSec / 86400.0;
         std::vector<PassEvent> merged;
         merged.push_back(std::move(passes[0]));

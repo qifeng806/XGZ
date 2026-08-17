@@ -11,16 +11,18 @@
 #include <QSpinBox>
 #include <QComboBox>
 #include <QCheckBox>
-#include <QTableWidget>
+#include <QTableView>
 #include <QPushButton>
 #include <QLabel>
 #include <QProgressBar>
 #include <QTabWidget>
 #include <QDateTimeEdit>
+#include <QFutureWatcher>
 #include "core/models.h"
 #include "business/PassPredictorService.h"
 #include "business/TleFetcher.h"
 #include "business/TleBlocks.h"
+#include "PassTableModel.h"
 
 QT_BEGIN_NAMESPACE
 class PolarPlotWidget;
@@ -57,7 +59,7 @@ private slots:
 private:
     void setupUI();
     void setupConnections();
-    void populateTable(const QVector<PassEvent> &passes);
+    void populateTable(const QVector<const PassEvent *> &passes);
     // 从当前 UI 控件填充 Job 的观测站参数与计算配置
     void fillJobFromUi(PassPredictWorker::Job &job) const;
     // 公共批量启动: 解析校验 TLE 块 → 构建任务 → 启动批量预报
@@ -66,8 +68,14 @@ private:
     void applyFilterAndRefresh();
     // 状态栏标签: 同步文本与悬浮提示（文本过长时完整内容可悬停查看）
     void setStatusText(QLabel *label, const QString &text);
-    QVector<PassEvent> m_currentPasses;    // 原始全部过境
-    QVector<PassEvent> m_filteredPasses;   // 过滤后（导出用）
+    QVector<PassEvent> m_currentPasses;         // 原始全部过境（唯一所有权）
+    QVector<const PassEvent *> m_filteredPasses; // 过滤后（共享指针, 零深拷贝）
+
+    // 导出异步化: 文件写入在 QtConcurrent 线程池执行, 完成回调收尾
+    enum class ExportKind { Csv, Kml, Json };
+    void startExport(ExportKind kind, const QString &filePath);
+    void onExportFinished();
+    QFutureWatcher<QString> *m_exportWatcher = nullptr;
 
     // 输入控件
     QPlainTextEdit  *m_tleInput1;
@@ -111,7 +119,8 @@ private:
 
     // 结果区
     QTabWidget   *m_tabWidget;
-    QTableWidget *m_passTable;
+    QTableView   *m_passTable;      // 懒加载视图: 仅请求可见单元格
+    PassTableModel *m_tableModel;
     PolarPlotWidget  *m_polarPlot;
     GroundTrackWidget *m_groundTrack;
     DopplerPlotWidget *m_dopplerPlot;

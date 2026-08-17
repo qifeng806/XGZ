@@ -44,7 +44,7 @@ DopplerPlotWidget::DopplerPlotWidget(QWidget *parent)
     setMinimumSize(400, 260);
 }
 
-void DopplerPlotWidget::setPasses(const QVector<PassEvent> &passes)
+void DopplerPlotWidget::setPasses(const QVector<const PassEvent *> &passes)
 {
     m_passes = passes;
     // 保留原选中行: 过滤切换后若选中越界则钳到末尾, 而非强制回到第 0 行
@@ -82,7 +82,7 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     // 收集含数据曲线的过境
     QVector<int> curveIdx;   // m_passes 中的下标
     for (int i = 0; i < m_passes.size(); ++i)
-        if (hasDopplerData(m_passes[i])) curveIdx.append(i);
+        if (hasDopplerData(*m_passes[i])) curveIdx.append(i);
     if (curveIdx.isEmpty()) {
         painter.setPen(QColor(175, 182, 195));
         painter.drawText(rect(), Qt::AlignCenter, "无多普勒数据\n（载频为零或采样未启用）");
@@ -92,7 +92,7 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     // 点集只计算一次（范围扫描与绘制共用），避免每条曲线重复遍历/分配
     QVector<QVector<QPointF>> curvePts(curveIdx.size());
     for (int i = 0; i < curveIdx.size(); ++i)
-        curvePts[i] = curvePoints(m_passes[curveIdx[i]]);
+        curvePts[i] = curvePoints(*m_passes[curveIdx[i]]);
 
     // 数据范围: X = 0..maxDuration, Y = [min, max]
     double xMax = 0.0, yMin = 0.0, yMax = 0.0;
@@ -154,7 +154,7 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
 
     // 曲线
     const bool hasSel = (m_selectedIndex >= 0 && m_selectedIndex < m_passes.size()
-                         && hasDopplerData(m_passes[m_selectedIndex]));
+                         && hasDopplerData(*m_passes[m_selectedIndex]));
     for (int i = 0; i < curveIdx.size(); ++i) {
         const int idx = curveIdx[i];
         const bool isSel = (idx == m_selectedIndex);
@@ -185,7 +185,7 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
                                     plotArea.width(), 16),
                              Qt::AlignHCenter,
                              QString("%1   峰值频移: %2 kHz")
-                                 .arg(QString::fromStdString(m_passes[idx].satelliteName))
+                                 .arg(QString::fromStdString(m_passes[idx]->satelliteName))
                                  .arg(yPeak, 0, 'f', 2));
         }
     }

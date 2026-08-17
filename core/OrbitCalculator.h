@@ -52,27 +52,29 @@ public:
 
 private:
     Config m_cfg;
-    mutable std::string m_satName;                      // 卫星名称
-    // 原子指针: 同一实例并发 predict 时取消标志的写入/复位无数据竞争
-    mutable std::atomic<const std::atomic<bool> *> m_cancel{nullptr};
+    mutable std::string m_satName;   // 卫星名称
 
-    bool cancelled() const {
-        const std::atomic<bool> *p = m_cancel.load();
-        return p && p->load();
+    // 取消标志沿调用链以参数传递（M 参数化）: 引擎保持无状态,
+    // 同一实例可安全并发 predict（原子指针成员方案已移除）
+    static bool isCancelled(const std::atomic<bool> *cancel) {
+        return cancel && cancel->load();
     }
 
     double elevationAt(PropagateFn &propagate,
                        const Observer &obs, double jd) const;
 
     double bisectAOS(PropagateFn &propagate, const Observer &obs,
-                     double jdBelow, double jdAbove) const;
+                     double jdBelow, double jdAbove,
+                     const std::atomic<bool> *cancel) const;
     double bisectLOS(PropagateFn &propagate, const Observer &obs,
-                     double jdAbove, double jdBelow) const;
+                     double jdAbove, double jdBelow,
+                     const std::atomic<bool> *cancel) const;
 
     void findTCA(PropagateFn &propagate, const Observer &obs,
                  double aosJD, double losJD,
                  int64_t &outJdMs, double &outElDeg,
-                 LookAngle &outLook, GeoPos &outGeo) const;
+                 LookAngle &outLook, GeoPos &outGeo,
+                 const std::atomic<bool> *cancel) const;
 
     void computeMoment(PropagateFn &propagate, const Observer &obs,
                        double jd, LookAngle &look, GeoPos &geo) const;
@@ -80,12 +82,14 @@ private:
     // 在 [AOS, LOS] 内等步长采集弧段采样点（填 PassEvent::samples，
     // enableDoppler 时同时填充各采样点多普勒）
     void collectSamples(PropagateFn &propagate, const Observer &obs,
-                        double jdAOS, double jdLOS, PassEvent &ev) const;
+                        double jdAOS, double jdLOS, PassEvent &ev,
+                        const std::atomic<bool> *cancel) const;
 
     // 可见弧段子区间: 在 [AOS, LOS] 内扫描"暗天 + 被照亮"的最大连续区间，
     // 边界做二分精化（填 visAosJdMs/visLosJdMs/hasVisibleArc）
     void collectVisibleArc(PropagateFn &propagate, const Observer &obs,
-                           double jdAOS, double jdLOS, PassEvent &ev) const;
+                           double jdAOS, double jdLOS, PassEvent &ev,
+                           const std::atomic<bool> *cancel) const;
 
     static int64_t jdToIntMs(double jd);
     static double intMsToJd(int64_t ms);

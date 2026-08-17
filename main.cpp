@@ -23,6 +23,10 @@ int main(int argc, char *argv[])
 {
     registerMetaTypes();
 
+    // 单实例检查所需的提示弹窗也是 QWidget——QApplication 必须先于任何
+    // 弹窗构造, 否则 Qt 6 下第二个实例启动即崩溃（M 必修项）
+    QApplication app(argc, argv);
+
     // 单实例保护：同一用户会话内仅允许一个 XGZ 实例（锁随 main 栈对象持有至进程退出）
     // 注意: 不使用 setStaleLockTime(0)——那会禁用陈旧锁检测, 崩溃/强杀后残留的
     // 锁文件将永久拦截启动; 保留默认 30 秒, 崩溃后等待 30 秒即自动接管
@@ -35,7 +39,6 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    QApplication app(argc, argv);
     app.setApplicationName("XGZ");
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("XGZ");

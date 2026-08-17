@@ -57,7 +57,7 @@ bool GroundTrackWidget::loadLandData()
     return !m_landPolygons.isEmpty();
 }
 
-void GroundTrackWidget::setPasses(const QVector<PassEvent> &passes,
+void GroundTrackWidget::setPasses(const QVector<const PassEvent *> &passes,
                                    double observerLatDeg, double observerLonDeg)
 {
     m_passes = passes;
@@ -177,34 +177,34 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
     };
 
     for (int pi = 0; pi < m_passes.size(); ++pi) {
-        const auto &p = m_passes[pi];
+        const PassEvent *p = m_passes[pi];
         bool isSelected = (pi == m_selectedIndex);
         QColor col = trackColors[pi % trackColors.size()];
         if (!isSelected) col.setAlpha(160);
 
         QPainterPath trackPath;
         // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
-        QPointF aosP = geoToScreen(p.aosSatGeo.latDeg, p.aosSatGeo.lonDeg, x0, y0, sx, sy);
-        QPointF tcaP = geoToScreen(p.tcaSatGeo.latDeg, p.tcaSatGeo.lonDeg, x0, y0, sx, sy);
-        QPointF losP = geoToScreen(p.losSatGeo.latDeg, p.losSatGeo.lonDeg, x0, y0, sx, sy);
+        QPointF aosP = geoToScreen(p->aosSatGeo.latDeg, p->aosSatGeo.lonDeg, x0, y0, sx, sy);
+        QPointF tcaP = geoToScreen(p->tcaSatGeo.latDeg, p->tcaSatGeo.lonDeg, x0, y0, sx, sy);
+        QPointF losP = geoToScreen(p->losSatGeo.latDeg, p->losSatGeo.lonDeg, x0, y0, sx, sy);
 
-        if (p.samples.size() >= 2) {
+        if (p->samples.size() >= 2) {
             // 真实地面轨迹: Catmull-Rom 平滑曲线（经过所有采样点）
             // 跨越 ±180° 经线处断开分段平滑，避免整幅横穿伪影
             auto screenPt = [&](const PassSample &s) {
                 return geoToScreen(s.geo.latDeg, s.geo.lonDeg, x0, y0, sx, sy);
             };
             QVector<QPointF> seg;
-            for (size_t k = 0; k < p.samples.size(); ++k) {
+            for (size_t k = 0; k < p->samples.size(); ++k) {
                 if (!seg.isEmpty()) {
-                    double dlon = std::abs(p.samples[k].geo.lonDeg
-                                           - p.samples[k - 1].geo.lonDeg);
+                    double dlon = std::abs(p->samples[k].geo.lonDeg
+                                           - p->samples[k - 1].geo.lonDeg);
                     if (dlon > 180.0) {       // 跨经线: 断开
                         trackPath.addPath(CatmullRom::path(seg));
                         seg.clear();
                     }
                 }
-                seg.append(screenPt(p.samples[k]));
+                seg.append(screenPt(p->samples[k]));
             }
             trackPath.addPath(CatmullRom::path(seg));
         } else {

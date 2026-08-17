@@ -3,7 +3,7 @@
 # Qt 6.11.0 + qmake + C++17 + MinGW-w64
 # 集成 perturb 库 (gunvirranu/perturb, MIT) 作为 SGP4/SDP4 引擎
 # =============================================================================
-QT       += core gui widgets network
+QT       += core gui widgets network concurrent
 CONFIG   += c++17
 TARGET    = XGZ
 TEMPLATE  = app
@@ -31,6 +31,7 @@ SOURCES += \
     ui/PolarPlotWidget.cpp \
     ui/GroundTrackWidget.cpp \
     ui/DopplerPlotWidget.cpp \
+    ui/PassTableModel.cpp \
     perturb-master/src/perturb.cpp \
     perturb-master/src/sgp4.cpp \
     perturb-master/src/tle.cpp
@@ -56,6 +57,7 @@ HEADERS += \
     ui/GroundTrackWidget.h \
     ui/DopplerPlotWidget.h \
     ui/CatmullRom.h \
+    ui/PassTableModel.h \
     perturb-master/include/perturb/perturb.hpp \
     perturb-master/include/perturb/sgp4.hpp \
     perturb-master/include/perturb/tle.hpp

@@ -14,7 +14,8 @@ class GroundTrackWidget : public QWidget {
 public:
     explicit GroundTrackWidget(QWidget *parent = nullptr);
 
-    void setPasses(const QVector<PassEvent> &passes,
+    // 共享数据指针（指向 MainWindow 持有的过境集合, 不深拷贝采样向量）
+    void setPasses(const QVector<const PassEvent *> &passes,
                    double observerLatDeg, double observerLonDeg);
     void setSelectedPass(int index);
     void clear();
@@ -23,7 +24,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    QVector<PassEvent> m_passes;
+    QVector<const PassEvent *> m_passes;
     int m_selectedIndex = -1;
     double m_obsLat = 0.0, m_obsLon = 0.0;
 

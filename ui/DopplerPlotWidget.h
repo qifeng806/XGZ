@@ -14,7 +14,8 @@ class DopplerPlotWidget : public QWidget {
 public:
     explicit DopplerPlotWidget(QWidget *parent = nullptr);
 
-    void setPasses(const QVector<PassEvent> &passes);
+    // 共享数据指针（指向 MainWindow 持有的过境集合, 不深拷贝采样向量）
+    void setPasses(const QVector<const PassEvent *> &passes);
     void setSelectedPass(int index);
     void clear();
 
@@ -22,7 +23,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    QVector<PassEvent> m_passes;
+    QVector<const PassEvent *> m_passes;
     int m_selectedIndex = -1;
 };
 

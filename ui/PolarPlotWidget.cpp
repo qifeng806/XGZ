@@ -20,7 +20,7 @@ PolarPlotWidget::PolarPlotWidget(QWidget *parent)
     setMouseTracking(true);
 }
 
-void PolarPlotWidget::setPasses(const QVector<PassEvent> &passes)
+void PolarPlotWidget::setPasses(const QVector<const PassEvent *> &passes)
 {
     m_passes = passes;
     // 保留原选中行: 过滤切换后若选中越界则钳到末尾, 而非强制回到第 0 行
@@ -123,25 +123,25 @@ void PolarPlotWidget::paintEvent(QPaintEvent *)
     };
 
     for (int pi = 0; pi < m_passes.size(); ++pi) {
-        const auto &p = m_passes[pi];
+        const PassEvent *p = m_passes[pi];
         bool isSelected = (pi == m_selectedIndex);
         QColor col = passColors[pi % passColors.size()];
         if (!isSelected) col.setAlpha(170);
 
         QPainterPath path;
         // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
-        QPointF aosP = polarToScreen(p.aosLook.azDeg, p.aosLook.elevDeg, cx, cy, radius);
-        QPointF tcaP = polarToScreen(p.tcaLook.azDeg, p.maxElevDeg, cx, cy, radius);
-        QPointF losP = polarToScreen(p.losLook.azDeg, p.losLook.elevDeg, cx, cy, radius);
+        QPointF aosP = polarToScreen(p->aosLook.azDeg, p->aosLook.elevDeg, cx, cy, radius);
+        QPointF tcaP = polarToScreen(p->tcaLook.azDeg, p->maxElevDeg, cx, cy, radius);
+        QPointF losP = polarToScreen(p->losLook.azDeg, p->losLook.elevDeg, cx, cy, radius);
 
-        if (p.samples.size() >= 2) {
+        if (p->samples.size() >= 2) {
             // 真实弧段: Catmull-Rom 平滑曲线（经过所有采样点）
             // 方位角跨 0°/360° 处断开分段平滑，避免整圈环绕伪影
             QVector<QPointF> seg;
-            for (size_t k = 0; k < p.samples.size(); ++k) {
-                const auto &s = p.samples[k];
+            for (size_t k = 0; k < p->samples.size(); ++k) {
+                const auto &s = p->samples[k];
                 if (!seg.isEmpty()) {
-                    double daz = std::abs(s.look.azDeg - p.samples[k - 1].look.azDeg);
+                    double daz = std::abs(s.look.azDeg - p->samples[k - 1].look.azDeg);
                     if (daz > 180.0) {    // 跨 0°/360°: 断开
                         path.addPath(CatmullRom::path(seg));
                         seg.clear();
