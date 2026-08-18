@@ -163,10 +163,15 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 记录错误并尝试恢复
         bool recoverySuccess = ErrorHandler::instance().handleError(errorInfo);
         
-        // 如果恢复失败，发送错误信号
-        if (!recoverySuccess) {
-            emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
+        // 恢复成功: 自动跳过该任务（如 WARNING 级校验和错误）——仍须通知调度层:
+        // 批量 completed 计数靠信号驱动, 缺失会让 resultReady 永不发出（悬挂）;
+        // 单星模式 UI 也会永久停留在"计算中"
+        if (recoverySuccess) {
+            emit jobSkipped(satelliteId, details);
+            return;
         }
+        // 恢复失败，发送错误信号
+        emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
         
         return;
     }
@@ -232,10 +237,13 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 记录错误并尝试恢复
         bool recoverySuccess = ErrorHandler::instance().handleError(errorInfo);
         
-        // 如果恢复失败，发送错误信号
-        if (!recoverySuccess) {
-            emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
+        // 恢复成功: 自动跳过（如传播器可重试场景）——通知调度层计数防悬挂
+        if (recoverySuccess) {
+            emit jobSkipped(satelliteId, details);
+            return;
         }
+        // 恢复失败，发送错误信号
+        emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
         
         return;
     }
@@ -356,10 +364,13 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 记录错误并尝试恢复
         bool recoverySuccess = ErrorHandler::instance().handleError(errorInfo);
         
-        // 如果恢复失败，发送错误信号
-        if (!recoverySuccess) {
-            emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
+        // 恢复成功: 自动跳过（防御: 当前计算错误均为 ERROR 级不会命中, 防未来改级）
+        if (recoverySuccess) {
+            emit jobSkipped(satelliteId, details);
+            return;
         }
+        // 恢复失败，发送错误信号
+        emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
         
         return;
     } catch (...) {

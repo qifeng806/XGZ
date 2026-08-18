@@ -34,8 +34,8 @@ PassPredictorService::~PassPredictorService()
         } else {
             // 超时或未响应：强制解除父子关系，避免析构时的未定义行为
             t->setParent(nullptr);
-        // worker 由 shared_ptr 自动管理，无需手动删除
-        aj.worker.reset();
+            // worker 由 shared_ptr 自动管理，无需手动删除
+            aj.worker.reset();
         }
         aj.thread = nullptr;
     }
@@ -48,7 +48,8 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
 
     // 单星任务不走批量汇总; 递增序号使在途批量任务的迟到信号全部失效
     // （cleanupAll→cancelAll 已递增一次，此处唯一确定本任务取到的序号）
-    const int seq = ++m_batchSeq;    auto *thread = new QThread(this);
+    const int seq = ++m_batchSeq;
+    auto *thread = new QThread(this);
     auto worker = std::make_shared<PassPredictWorker>();
     worker->moveToThread(thread);
 
@@ -71,6 +72,14 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
             [this, seq](QString msg) {
                 if (seq != m_batchSeq) return;
                 emit errorOccurred(msg);
+            });
+    // 被自动恢复策略跳过（如 WARNING 级校验和错误）: 单星模式必须告知用户,
+    // 否则"计算中"状态永不结束
+    connect(worker.get(), &PassPredictWorker::jobSkipped, this,
+            [this, seq](QString satelliteId, QString reason) {
+                if (seq != m_batchSeq) return;
+                emit errorOccurred(QString("卫星 %1 已跳过: %2")
+                                       .arg(satelliteId, reason));
             });
     connect(worker.get(), &PassPredictWorker::metaInfo, this,
             [this, seq](QString model, QString epochUtc, double ageDays) {
@@ -155,6 +164,23 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                     int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
                     emit batchProgress(completed, m_batchTotal);
                     emit errorOccurred(msg);
+                    if (completed == m_batchTotal) {
+                        locker.unlock();  // 在调用 finishBatch 前解锁
+                        finishBatch();
+                    }
+                });
+
+        // 被自动恢复策略跳过（如 WARNING 级校验和错误）: 不报错但必须计数,
+        // 否则 completed 永远 < total → resultReady 永不发出（批量悬挂）
+        connect(worker.get(), &PassPredictWorker::jobSkipped, this,
+                [this, seq](QString satelliteId, QString reason) {
+                    if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
+                    
+                    QMutexLocker locker(&m_batchMutex);
+                    int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
+                    emit batchProgress(completed, m_batchTotal);
+                    emit errorOccurred(QString("卫星 %1 已跳过: %2")
+                                           .arg(satelliteId, reason));
                     if (completed == m_batchTotal) {
                         locker.unlock();  // 在调用 finishBatch 前解锁
                         finishBatch();
@@ -272,7 +298,7 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
     
     aj.thread->deleteLater();
     aj.thread = nullptr;
-    aj.worker.reset();  // worker 已通过 finished → deleteLater 被清理
+    aj.worker.reset();  // worker 生命周期归 shared_ptr（cleanupJob 中 reset 释放）
     return true;
 }
 

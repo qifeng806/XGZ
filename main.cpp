@@ -105,6 +105,25 @@ int main(int argc, char *argv[])
             color: #e0e0e0;
         }
         QProgressBar::chunk { background-color: #4488cc; }
+        /* 状态栏: Windows 默认浅白底, 深色主题下须与 QMainWindow 背景一致 */
+        QStatusBar { background-color: #2b2b2b; color: #ccc; }
+        QStatusBar::item { border: none; }
+        /* 滚动条: 默认浅色轨道在深色主题下扎眼, 与表格/列表底色保持一致 */
+        QScrollBar:vertical, QScrollBar:horizontal {
+            background-color: #2b2b2b;
+            width: 14px; height: 14px;
+            margin: 0;
+        }
+        QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+            background-color: #555;
+            border-radius: 4px;
+            min-height: 30px; min-width: 30px;
+        }
+        QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+            background-color: #666;
+        }
+        QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+        QScrollBar::add-page, QScrollBar::sub-page { background: none; }
         /* 弹窗/下拉层: 默认浅色底 + 全局 QLabel{color:#ccc} 会形成低对比,
            须整体深色化（QMessageBox 按钮复用上方 QPushButton 规则） */
         QMessageBox, QDialog {

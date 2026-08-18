@@ -46,6 +46,10 @@ signals:
     void errorOccurred(QString message);
     // TLE 元信息: 传播模型 / 历元(UTC 字符串) / 数据龄期(天)
     void metaInfo(QString model, QString epochUtc, double ageDays);
+    // 任务被自动恢复策略跳过（如 WARNING 级校验和错误）:
+    // 不 emit errorOccurred, 但必须通知调度层——否则单星 UI 永久"计算中"、
+    // 批量 completed 计数缺失导致 resultReady 永不发出（悬挂）
+    void jobSkipped(QString satelliteId, QString reason);
 
 private:
     AtomicCancelFlagPtr m_cancelFlag;
