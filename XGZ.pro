@@ -68,14 +68,16 @@ HEADERS += \
 # ---- Include Paths ----
 INCLUDEPATH += . core business ui perturb-master/include
 
-# ---- 输出目录固定为基于 $$PWD 的绝对路径 ----
-# 保证无论从哪个目录执行 qmake/make（常见误操作: 在 release/ 子目录里构建），
-# moc 中间文件、目标文件与可执行文件都落到 D:\AAAAAAAAA\XGZ\release\ 下，
-# 且 `#include "MainWindow.moc"` 通过绝对 -I 路径解析，不再依赖相对目录
-DESTDIR     = $$PWD/release
-OBJECTS_DIR = $$PWD/release/obj
-MOC_DIR     = $$PWD/release/moc
-INCLUDEPATH += $$PWD/release/moc
+# ---- 输出目录 ----
+# 相对路径写法: qmake 在影子构建（Qt Creator 的 build\... 目录）下把
+# 这些相对路径解析为相对 shadow 目录, 就地构建时解析为相对工程目录——
+# 两层构建各自自洽。禁止写 $$PWD 绝对路径: qmake 对 OBJECTS_DIR 的
+# 相对化不完整, 影子构建的 Makefile 会引用不存在的 release/obj（链接失败）;
+# 禁止在 release/ 等子目录内运行 make（路径基准错位）
+DESTDIR     = release
+OBJECTS_DIR = release/obj
+MOC_DIR     = release/moc
+INCLUDEPATH += release/moc   # `#include "MainWindow.moc"` 的解析路径
 
 # ---- Compiler Flags ----
 win32-g++ {
