@@ -48,16 +48,18 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
 
     // 单星任务不走批量汇总; 递增序号使在途批量任务的迟到信号全部失效
     // （cleanupAll→cancelAll 已递增一次，此处唯一确定本任务取到的序号）
-    const int seq = ++m_batchSeq;    auto thread = std::make_unique<QThread>(this);
+    const int seq = ++m_batchSeq;    auto *thread = new QThread(this);
     auto worker = std::make_shared<PassPredictWorker>();
-    worker->moveToThread(thread.get());
+    worker->moveToThread(thread);
 
     // resultReady → quit thread
-    connect(worker.get(), &PassPredictWorker::resultReady, thread.get(), &QThread::quit);
+    connect(worker.get(), &PassPredictWorker::resultReady, thread, &QThread::quit);
     // errorOccurred → also quit thread（修复：之前不 quit 导致线程泄漏）
-    connect(worker.get(), &PassPredictWorker::errorOccurred, thread.get(), &QThread::quit);
-    // 线程结束 → 清理 worker (由 shared_ptr 自动管理)
-    connect(thread.get(), &QThread::finished, worker.get(), &QObject::deleteLater);
+    connect(worker.get(), &PassPredictWorker::errorOccurred, thread, &QThread::quit);
+    // 注意: 不得用 finished→deleteLater 删 worker——线程结束时即释放对象,
+    // 但 m_activeJobs/转发 lambda 的 shared_ptr 仍引用它, 下次 cleanupAll→
+    // cancelAll 会对已释放对象调用 cancel()（悬垂指针 UAF, 析构即崩溃）。
+    // worker 生命周期由 shared_ptr 全权管理（cleanupJob 中 reset 释放）
     // 转发信号（metaInfo 同样带序号守卫: 取消/换任务后迟到元信息一律丢弃,
     // 防止状态栏显示已淘汰任务的模型与历元）
     connect(worker.get(), &PassPredictWorker::resultReady, this,
@@ -76,10 +78,10 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
                 emit metaInfo(model, epochUtc, ageDays);
             });
 
-    m_activeJobs.append({thread.get(), worker, QDateTime::currentMSecsSinceEpoch()});
+    m_activeJobs.append({thread, worker, QDateTime::currentMSecsSinceEpoch()});
 
     // 启动线程（在线程 started 信号中调用 worker->run）
-    connect(thread.get(), &QThread::started, worker.get(), [worker, job]() {
+    connect(thread, &QThread::started, worker.get(), [worker, job]() {
         worker->run(job);
     });
     // QThread::start 返回 void: 线程创建失败时 Qt 内部致命退出，不会静默失败
@@ -121,9 +123,11 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         for (int i = w; i < m_batchTotal; i += workerCount)
             slice.append(jobs[i]);
 
-        auto thread = std::make_unique<QThread>(this);
+        // 堆分配 QThread: 生命周期归 cleanupJob/孤儿回收管理（deleteLater）,
+        // 绝不可用栈/unique_ptr——作用域结束即销毁仍运行的 QThread 是未定义行为
+        auto *thread = new QThread(this);
         auto worker = std::make_shared<PassPredictWorker>();
-        worker->moveToThread(thread.get());
+        worker->moveToThread(thread);
 
         // 成功: 汇总结果并计数
         connect(worker.get(), &PassPredictWorker::resultReady, this,
@@ -157,9 +161,10 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                     }
                 });
 
-        connect(worker.get(), &PassPredictWorker::resultReady, thread.get(), &QThread::quit);
-        connect(worker.get(), &PassPredictWorker::errorOccurred, thread.get(), &QThread::quit);
-        connect(thread.get(), &QThread::finished, worker.get(), &QObject::deleteLater);
+        connect(worker.get(), &PassPredictWorker::resultReady, thread, &QThread::quit);
+        connect(worker.get(), &PassPredictWorker::errorOccurred, thread, &QThread::quit);
+        // 同 startJob: worker 生命周期归 shared_ptr, 不得 finished→deleteLater
+        // （否则线程结束时对象被释放, m_activeJobs 引用悬垂 → cancelAll UAF）
         connect(worker.get(), &PassPredictWorker::metaInfo, this,
                 [this, seq](QString model, QString epochUtc, double ageDays) {
                     // 批次收尾(resultReady 已发出)后, 同批次内迟到 worker 的
@@ -169,9 +174,9 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                     emit metaInfo(model, epochUtc, ageDays);
                 });
 
- m_activeJobs.append({thread.get(), worker, QDateTime::currentMSecsSinceEpoch()});
+        m_activeJobs.append({thread, worker, QDateTime::currentMSecsSinceEpoch()});
 
-        connect(thread.get(), &QThread::started, worker.get(), [worker, slice]() {
+        connect(thread, &QThread::started, worker.get(), [worker, slice]() {
             worker->runJobs(slice);
         });
         // QThread::start 返回 void: 线程创建失败时 Qt 内部致命退出，不会静默失败

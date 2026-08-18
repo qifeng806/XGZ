@@ -60,26 +60,27 @@ static void fillPassDetails(PassEvent &ev,
         // 光照分析
         if (cfg.enableSunAnalysis) {
             // 优化：缓存太阳位置计算结果
-            auto sunA = SunPositionCalc::compute(jdAOS, observer.latDeg(), observer.lonDeg());
-            auto sunT = SunPositionCalc::compute(jdTCA, observer.latDeg(), observer.lonDeg());
-            auto sunL = SunPositionCalc::compute(jdLOS, observer.latDeg(), observer.lonDeg());
+            const auto sunA = SunPositionCalc::compute(jdAOS, observer.latDeg(), observer.lonDeg());
+            const auto sunT = SunPositionCalc::compute(jdTCA, observer.latDeg(), observer.lonDeg());
+            const auto sunL = SunPositionCalc::compute(jdLOS, observer.latDeg(), observer.lonDeg());
             
-            // 检查太阳位置数据有效性
-            if (!std::isfinite(sunA.altDeg) || !std::isfinite(sunT.altDeg) || !std::isfinite(sunL.altDeg)) {
-                throw std::runtime_error("太阳位置数据无效");
+            // 太阳位置计算失败（输入非法）: 与下方"传播失败"同样处理——
+            // 由外层 try/catch 落为 Daylight/默认值, 绝不用伪造的 0 值参与判定
+            if (!sunA || !sunT || !sunL) {
+                throw std::runtime_error("太阳位置计算失败");
             }
             
-            ev.aosSunAlt = sunA.altDeg;
-            ev.tcaSunAlt = sunT.altDeg;
-            ev.losSunAlt = sunL.altDeg;
+            ev.aosSunAlt = sunA->altDeg;
+            ev.tcaSunAlt = sunT->altDeg;
+            ev.losSunAlt = sunL->altDeg;
 
             if (cfg.enableShadowCheck) {
                 if (eciA) {
                     auto eA = CoordTransform::eciToEcef(eciA->posKm, jdAOS);
                     // 太阳方向必须旋转到 ECEF 与卫星位置同系
-                    auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
-                    ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
-                    ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA.distanceAU);
+                    auto sunDirA = CoordTransform::eciDirToEcef(sunA->dirECI, jdAOS);
+                    ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA->distanceAU);
+                    ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA->distanceAU);
                 } else {
                     // 传播失败: 不得让 PassEvent 保持结构体默认值 FullSunlight/1.0
                     // —— 那会把失败时刻"默认为照亮", 暗天过境被误判为可见
@@ -88,18 +89,18 @@ static void fillPassDetails(PassEvent &ev,
                 }
                 if (eciT) {
                     auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
-                    auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
-                    ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
-                    ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT.distanceAU);
+                    auto sunDirT = CoordTransform::eciDirToEcef(sunT->dirECI, jdTCA);
+                    ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT->distanceAU);
+                    ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT->distanceAU);
                 } else {
                     ev.tcaSatShadow = ShadowStatus::InUmbra;
                     ev.tcaIllum = 0.0;
                 }
                 if (eciL) {
                     auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
-                    auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
-                    ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
-                    ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL.distanceAU);
+                    auto sunDirL = CoordTransform::eciDirToEcef(sunL->dirECI, jdLOS);
+                    ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL->distanceAU);
+                    ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL->distanceAU);
                 } else {
                     ev.losSatShadow = ShadowStatus::InUmbra;
                     ev.losIllum = 0.0;
@@ -126,10 +127,10 @@ static void fillPassDetails(PassEvent &ev,
                 if (eciT) {
                     auto satE = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
                     // 太阳 ECEF 位置（km）: 单位方向 × 日地距离
-                    auto sunDirE = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
+                    auto sunDirE = CoordTransform::eciDirToEcef(sunT->dirECI, jdTCA);
                     std::array<double, 3> sunPosE;
                     for (int k = 0; k < 3; ++k)
-                        sunPosE[k] = sunDirE[k] * (sunT.distanceAU * EarthShadow::AU_KM);
+                        sunPosE[k] = sunDirE[k] * (sunT->distanceAU * EarthShadow::AU_KM);
                     const double phase = MagnitudeCalc::phaseAngleRad(satE, sunPosE,
                                                                       observer.ecef());
                     ev.magAtTca = MagnitudeCalc::visualMagnitude(
@@ -444,7 +445,8 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
         }
         
         auto sun = SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
-        sunCache.emplace_back(jd, sun);
+        if (!sun) return std::nullopt;   // 计算失败: 不缓存、不伪值, 调用侧按不可见处理
+        sunCache.emplace_back(jd, *sun);
         return sun;
     };
     

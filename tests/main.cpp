@@ -6,6 +6,7 @@
 #include <QtTest/QtTest>
 #include <QByteArray>
 #include <QVector>
+#include "core/models.h"
 #include "tst_runners.h"
 
 namespace {
@@ -36,6 +37,10 @@ int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
 
+    // 跨线程队列投递自定义类型（与主程序 main.cpp 注册一致）
+    qRegisterMetaType<QVector<PassEvent>>("QVector<PassEvent>");
+    qRegisterMetaType<PassEvent>("PassEvent");
+
     struct Runner { const char *tag; int (*fn)(int, char *[]); };
     const Runner runners[] = {
         { "tleparser",      runTstTleParser },
@@ -49,6 +54,8 @@ int main(int argc, char *argv[])
         { "magnitude",      runTstMagnitude },
         { "doppler",        runTstDoppler },
         { "errorhandler",   runTstErrorHandler },
+        { "passworker",     runTstPassWorker },
+        { "passservice",    runTstPassService },
     };
 
     int failures = 0;

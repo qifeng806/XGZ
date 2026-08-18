@@ -4,6 +4,7 @@
 // =============================================================================
 #include <QtTest/QtTest>
 #include <cmath>
+#include <limits>
 #include "core/SunPosition.h"
 #include "core/CoordTransform.h"
 #include "testutils.h"
@@ -21,50 +22,54 @@ private slots:
     void beijingNoonAltitudes();
     void dirEciUnitLength();
     void sunAtOverheadEquator();
+    void invalidInputReturnsNullopt();
 };
 
 void TstSunPosition::vernalEquinox2024()
 {
     // 2024-03-20 03:06 UT：春分，太阳黄经 λ≈0°，赤纬跨零，赤经≈0°
     double jd = jdFromUtc(2024, 3, 20, 3, 6, 0);
-    SunPosition s = SunPositionCalc::compute(jd, 0.0, 0.0);
+    auto s = SunPositionCalc::compute(jd, 0.0, 0.0);
+    QVERIFY2(s.has_value(), "春分时刻太阳位置计算应成功");
 
-    QVERIFY2(std::abs(s.decDeg) < 0.5,
-             qPrintable(QString("dec=%1").arg(s.decDeg, 0, 'f', 3)));
-    QVERIFY2(std::abs(s.raDeg - 0.0) < 0.5 || std::abs(s.raDeg - 360.0) < 0.5,
-             qPrintable(QString("ra=%1").arg(s.raDeg, 0, 'f', 3)));
+    QVERIFY2(std::abs(s->decDeg) < 0.5,
+             qPrintable(QString("dec=%1").arg(s->decDeg, 0, 'f', 3)));
+    QVERIFY2(std::abs(s->raDeg - 0.0) < 0.5 || std::abs(s->raDeg - 360.0) < 0.5,
+             qPrintable(QString("ra=%1").arg(s->raDeg, 0, 'f', 3)));
 
     // 2024 年近日点 1 月 3 日 → 3 月 20 日太阳距地约 0.996 AU
-    QVERIFY2(std::abs(s.distanceAU - 0.9961) < 0.002,
-             qPrintable(QString("dist=%1").arg(s.distanceAU, 0, 'f', 5)));
+    QVERIFY2(std::abs(s->distanceAU - 0.9961) < 0.002,
+             qPrintable(QString("dist=%1").arg(s->distanceAU, 0, 'f', 5)));
 }
 
 void TstSunPosition::summerSolstice2024()
 {
     // 2024-06-20 20:51 UT：夏至，赤纬最大 ≈ +23.44°，赤经 ≈ 90°
     double jd = jdFromUtc(2024, 6, 20, 20, 51, 0);
-    SunPosition s = SunPositionCalc::compute(jd, 0.0, 0.0);
+    auto s = SunPositionCalc::compute(jd, 0.0, 0.0);
+    QVERIFY(s.has_value());
 
-    QVERIFY2(std::abs(s.decDeg - 23.44) < 0.3,
-             qPrintable(QString("dec=%1").arg(s.decDeg, 0, 'f', 3)));
-    QVERIFY2(std::abs(s.raDeg - 90.0) < 1.0,
-             qPrintable(QString("ra=%1").arg(s.raDeg, 0, 'f', 3)));
+    QVERIFY2(std::abs(s->decDeg - 23.44) < 0.3,
+             qPrintable(QString("dec=%1").arg(s->decDeg, 0, 'f', 3)));
+    QVERIFY2(std::abs(s->raDeg - 90.0) < 1.0,
+             qPrintable(QString("ra=%1").arg(s->raDeg, 0, 'f', 3)));
 
     // 远日点 7 月 5 日 → 6 月 20 日距地约 1.016 AU
-    QVERIFY2(std::abs(s.distanceAU - 1.0164) < 0.002,
-             qPrintable(QString("dist=%1").arg(s.distanceAU, 0, 'f', 5)));
+    QVERIFY2(std::abs(s->distanceAU - 1.0164) < 0.002,
+             qPrintable(QString("dist=%1").arg(s->distanceAU, 0, 'f', 5)));
 }
 
 void TstSunPosition::winterSolstice2024()
 {
     // 2024-12-21 09:20 UT：冬至，赤纬 ≈ −23.44°，赤经 ≈ 270°
     double jd = jdFromUtc(2024, 12, 21, 9, 20, 0);
-    SunPosition s = SunPositionCalc::compute(jd, 0.0, 0.0);
+    auto s = SunPositionCalc::compute(jd, 0.0, 0.0);
+    QVERIFY(s.has_value());
 
-    QVERIFY2(std::abs(s.decDeg + 23.44) < 0.3,
-             qPrintable(QString("dec=%1").arg(s.decDeg, 0, 'f', 3)));
-    QVERIFY2(std::abs(s.raDeg - 270.0) < 1.0,
-             qPrintable(QString("ra=%1").arg(s.raDeg, 0, 'f', 3)));
+    QVERIFY2(std::abs(s->decDeg + 23.44) < 0.3,
+             qPrintable(QString("dec=%1").arg(s->decDeg, 0, 'f', 3)));
+    QVERIFY2(std::abs(s->raDeg - 270.0) < 1.0,
+             qPrintable(QString("ra=%1").arg(s->raDeg, 0, 'f', 3)));
 }
 
 void TstSunPosition::beijingNoonAltitudes()
@@ -77,21 +82,23 @@ void TstSunPosition::beijingNoonAltitudes()
     auto check = [](int y, int mo, int d, double expectAlt, const char *tag) {
         double jd = jdFromUtc(y, mo, d, 4, 14, 0);
         for (int i = 0; i < 10; ++i) {
-            SunPosition s = SunPositionCalc::compute(jd, BEIJING_LAT, BEIJING_LON);
-            double lha = CoordTransform::gmstRad(jd) * 180.0 / M_PI + BEIJING_LON - s.raDeg;
+            auto s = SunPositionCalc::compute(jd, BEIJING_LAT, BEIJING_LON);
+            QVERIFY(s.has_value());
+            double lha = CoordTransform::gmstRad(jd) * 180.0 / M_PI + BEIJING_LON - s->raDeg;
             while (lha > 180.0) lha -= 360.0;
             while (lha < -180.0) lha += 360.0;
             jd -= lha / GMST_RATE;
         }
-        SunPosition s = SunPositionCalc::compute(jd, BEIJING_LAT, BEIJING_LON);
-        double azErr = std::abs(s.azDeg - 180.0);
+        auto s = SunPositionCalc::compute(jd, BEIJING_LAT, BEIJING_LON);
+        QVERIFY(s.has_value());
+        double azErr = std::abs(s->azDeg - 180.0);
         if (azErr > 180.0) azErr = 360.0 - azErr;
         QVERIFY2(azErr < 0.05,
                  qPrintable(QString("%1: 中天 az=%2, 期望 180")
-                            .arg(tag).arg(s.azDeg, 0, 'f', 4)));
-        QVERIFY2(std::abs(s.altDeg - expectAlt) < 0.7,
+                            .arg(tag).arg(s->azDeg, 0, 'f', 4)));
+        QVERIFY2(std::abs(s->altDeg - expectAlt) < 0.7,
                  qPrintable(QString("%1: alt=%2, 期望 %3")
-                            .arg(tag).arg(s.altDeg, 0, 'f', 2).arg(expectAlt, 0, 'f', 2)));
+                            .arg(tag).arg(s->altDeg, 0, 'f', 2).arg(expectAlt, 0, 'f', 2)));
     };
     check(2024, 6, 20, 90.0 - BEIJING_LAT + 23.44,  "夏至正午");   // ≈73.5°
     check(2024, 12, 21, 90.0 - BEIJING_LAT - 23.44, "冬至正午");   // ≈26.7°
@@ -102,18 +109,19 @@ void TstSunPosition::dirEciUnitLength()
 {
     for (int i = 0; i < 400; ++i) {
         double jd = 2451545.0 + i * 13.7;   // 全年采样
-        SunPosition s = SunPositionCalc::compute(jd, 0.0, 0.0);
-        double n = std::sqrt(s.dirECI[0] * s.dirECI[0]
-                           + s.dirECI[1] * s.dirECI[1]
-                           + s.dirECI[2] * s.dirECI[2]);
+        auto s = SunPositionCalc::compute(jd, 0.0, 0.0);
+        QVERIFY(s.has_value());
+        double n = std::sqrt(s->dirECI[0] * s->dirECI[0]
+                           + s->dirECI[1] * s->dirECI[1]
+                           + s->dirECI[2] * s->dirECI[2]);
         QVERIFY(std::abs(n - 1.0) < 1e-9);
 
         // RA/Dec 与方向矢量一致性
-        double ra = std::atan2(s.dirECI[1], s.dirECI[0]) * 180.0 / M_PI;
+        double ra = std::atan2(s->dirECI[1], s->dirECI[0]) * 180.0 / M_PI;
         if (ra < 0.0) ra += 360.0;
-        QVERIFY(std::abs(ra - s.raDeg) < 1e-6);
-        double dec = std::asin(s.dirECI[2]) * 180.0 / M_PI;
-        QVERIFY(std::abs(dec - s.decDeg) < 1e-6);
+        QVERIFY(std::abs(ra - s->raDeg) < 1e-6);
+        double dec = std::asin(s->dirECI[2]) * 180.0 / M_PI;
+        QVERIFY(std::abs(dec - s->decDeg) < 1e-6);
     }
 }
 
@@ -125,11 +133,24 @@ void TstSunPosition::sunAtOverheadEquator()
     double jd0 = jdFromUtc(2024, 3, 20, 0, 0, 0);
     double best = -90.0;
     for (int m = 0; m < 24 * 60; ++m) {
-        SunPosition s = SunPositionCalc::compute(jd0 + m / 1440.0, 0.0, 0.0);
-        best = std::max(best, s.altDeg);
+        auto s = SunPositionCalc::compute(jd0 + m / 1440.0, 0.0, 0.0);
+        QVERIFY(s.has_value());
+        best = std::max(best, s->altDeg);
     }
     QVERIFY2(best > 89.5,
              qPrintable(QString("全天最高 alt=%1").arg(best, 0, 'f', 3)));
+}
+
+void TstSunPosition::invalidInputReturnsNullopt()
+{
+    // 非法输入（NaN/Inf）: 必须返回 nullopt, 不得返回伪造的 0 值结果
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+
+    QVERIFY(!SunPositionCalc::compute(nan, 0.0, 0.0).has_value());
+    QVERIFY(!SunPositionCalc::compute(inf, 0.0, 0.0).has_value());
+    QVERIFY(!SunPositionCalc::compute(2451545.0, nan, 0.0).has_value());
+    QVERIFY(!SunPositionCalc::compute(2451545.0, 0.0, inf).has_value());
 }
 
 int runTstSunPosition(int argc, char *argv[])

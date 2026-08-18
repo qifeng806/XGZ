@@ -30,8 +30,8 @@ namespace {
     }
 }
 
-SunPosition SunPositionCalc::compute(const double jdUtc,
-                                     double obsLatDeg, double obsLonDeg)
+std::optional<SunPosition> SunPositionCalc::compute(const double jdUtc,
+                                                    double obsLatDeg, double obsLonDeg)
 {
     try {
         // 输入验证
@@ -168,17 +168,9 @@ SunPosition SunPositionCalc::compute(const double jdUtc,
 
         return sp;
     } catch (const std::exception &e) {
-        // 记录错误信息（在实际应用中可以使用日志系统）
-        // std::cerr << "太阳位置计算失败: " << e.what() << std::endl;
-        
-        // 返回默认值
-        SunPosition sp;
-        sp.raDeg = 0.0;
-        sp.decDeg = 0.0;
-        sp.azDeg = 0.0;
-        sp.altDeg = 0.0;
-        sp.distanceAU = 1.0;
-        sp.dirECI = {1.0, 0.0, 0.0};
-        return sp;
+        // 计算失败（输入非法/中间值非有限）: 不吞错返回默认值——
+        // 调用侧收到 nullopt 可区分"真失败"与"合法结果"，避免把
+        // RA=0/Dec=0 的伪结果当真实数据使用
+        return std::nullopt;
     }
 }

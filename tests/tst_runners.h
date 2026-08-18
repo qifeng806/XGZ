@@ -15,8 +15,7 @@ int runTstOrbitCalc(int argc, char *argv[]);
 int runTstMagnitude(int argc, char *argv[]);
 int runTstDoppler(int argc, char *argv[]);
 int runTstErrorHandler(int argc, char *argv[]);
-int runTstConcurrentTests(int argc, char *argv[]);
-int runTstPerformanceTests(int argc, char *argv[]);
-int runTstMemoryTests(int argc, char *argv[]);
+int runTstPassWorker(int argc, char *argv[]);
+int runTstPassService(int argc, char *argv[]);
 
 #endif // TESTS_TST_RUNNERS_H

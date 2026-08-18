@@ -1,21 +1,47 @@
-# 测试运行输出（每次运行重新生成）
-tests/run_*.txt
-run_*.txt
+# =============================================================================
+# .gitignore — 商业子代理重构草稿（交付物, 不纳入版本库）
+# 均为未接线/未构建的参考实现; 若后续采纳其中部分, 从本清单移除后再提交
+# =============================================================================
 
-# 构建产物
-tests/release/
-tests/debug/
-tests/Makefile*
+# business 层草稿
+business/BusinessLogicController.cpp
+business/BusinessLogicController.h
+business/ErrorManager.cpp
+business/ErrorManager.h
+business/ExportManager.cpp
+business/ExportManager.h
+
+# ui 层草稿
+ui/Configuration.cpp
+ui/Configuration.h
+ui/UIController.cpp
+ui/UIController.h
+ui/MainWindowRefactored.cpp
+ui/MainWindowRefactored.h
+
+# 文档与脚本
+docs/
+重构方案.md
+测试覆盖改进报告.md
+原子操作修复报告.md
+
+# tests/ 子代理草稿与构建产物
+tests/CMakeLists.txt
+tests/README.md
+
+# 构建产物与运行日志
 release/
+tests/release/
 debug/
-build/
-Makefile*
+tests/debug/
+Makefile
+Makefile.Release
+Makefile.Debug
 .qmake.stash
+tests/.qmake.stash
 .qtcreator/
-
-# Qt Creator 生成（含机器特定路径, 不应提交）
-tests/target_wrapper.bat
-*.pro.user
-*.user
-tests/tst_err.txt
-tests/tst_out.txt
+target_wrapper.bat
+run_*.txt
+*.o
+*.obj
+*.exe

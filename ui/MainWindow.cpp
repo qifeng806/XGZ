@@ -708,6 +708,7 @@ void MainWindow::onPredict()
 
     m_batchMode = false;
     m_batchErrors.clear();
+    m_lastErrorStatusText.clear();   // 新任务开始: 错误状态栏去重复位
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
     m_onlineUpdateBtn->setEnabled(false);
@@ -892,6 +893,7 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
 
     m_batchMode = true;
     m_batchErrors.clear();
+    m_lastErrorStatusText.clear();   // 新批量开始: 错误状态栏去重复位
     m_predictBtn->setEnabled(false);
     m_batchImportBtn->setEnabled(false);
     m_onlineUpdateBtn->setEnabled(false);
@@ -1153,6 +1155,9 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
             QString("%1 颗卫星预报失败:\n%2")
                 .arg(batchErrorsCopy.size())
                 .arg(shown.join("\n")));
+        // 收尾: 状态栏落最终失败数（节流期间的模数可能未覆盖末条）
+        setStatusText(m_statusModel,
+                      QString("模型: 批量错误 %1 项").arg(batchErrorsCopy.size()));
     }
 
     // 恢复控件状态
@@ -1188,8 +1193,12 @@ void MainWindow::onError(QString msg)
     if (m_batchMode) {
         // 批量模式: 不弹阻塞对话框，累计到结果时统一汇总
         m_batchErrors << msg;
-        setStatusText(m_statusModel,
-                      QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
+        // 状态栏节流: 每 100 项刷一次进度, 防千颗级失败风暴逐条重绘
+        // （实时总量由 batchProgress 进度条呈现, 最终失败数由汇总对话框给出）
+        if (m_batchErrors.size() % 100 == 0) {
+            setStatusText(m_statusModel,
+                          QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
+        }
         
         // 减少UI更新计数器
         m_uiUpdateCounter.fetchAndAddRelaxed(-1);
@@ -1513,16 +1522,24 @@ void MainWindow::setupErrorHandling()
 
 void MainWindow::onErrorOccurred(const ErrorInfo& error)
 {
+    // 状态栏文本去重（连续相同消息只刷一次）: 批量失败风暴（千颗同因失败）
+    // 下错误信号逐条到达, 逐条重绘会占满 UI 线程; 首条已表达全部信息
+    auto showStatus = [this](const QString &text) {
+        if (m_lastErrorStatusText == text) return;
+        m_lastErrorStatusText = text;
+        setStatusText(m_statusModel, text);
+    };
+
     // 根据错误严重程度决定如何处理
     switch (error.severity) {
     case ErrorSeverity::INFO:
         // 信息性错误，只在状态栏显示
-        setStatusText(m_statusModel, QString("信息: %1").arg(error.message));
+        showStatus(QString("信息: %1").arg(error.message));
         break;
         
     case ErrorSeverity::WARNING:
         // 警告错误，显示在状态栏并可能影响UI
-        setStatusText(m_statusModel, QString("警告: %1").arg(error.message));
+        showStatus(QString("警告: %1").arg(error.message));
         
         // 如果是TLE解析警告，可以继续处理
         if (error.type == ErrorType::TLE_PARSE_ERROR) {
@@ -1533,7 +1550,7 @@ void MainWindow::onErrorOccurred(const ErrorInfo& error)
     case ErrorSeverity::ERROR:
         // 错误，状态栏显示（阻塞对话框由 worker→service→onError 路径统一处理:
         // 单星弹窗/批量汇总, 避免此处无条件弹窗导致重复弹窗或批量刷屏）
-        setStatusText(m_statusModel, QString("错误: %1").arg(error.message));
+        showStatus(QString("错误: %1").arg(error.message));
         
         // 如果是网络错误，可能需要重试
         if (error.type == ErrorType::NETWORK_ERROR) {
@@ -1543,7 +1560,7 @@ void MainWindow::onErrorOccurred(const ErrorInfo& error)
         
     case ErrorSeverity::CRITICAL:
         // 严重错误，显示严重错误对话框
-        setStatusText(m_statusModel, QString("严重错误: %1").arg(error.message));
+        showStatus(QString("严重错误: %1").arg(error.message));
         
         QMessageBox::critical(this, "严重错误", 
                             error.message + "\n\n详细信息:\n" + error.detailedContext + 

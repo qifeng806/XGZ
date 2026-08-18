@@ -33,6 +33,8 @@ SOURCES += \
     tst_magnitude.cpp \
     tst_doppler.cpp \
     tst_errorhandler.cpp \
+    tst_passworker.cpp \
+    tst_passservice.cpp \
     ../core/TleParser.cpp \
     ../core/Propagator.cpp \
     ../core/CoordTransform.cpp \
@@ -45,6 +47,8 @@ SOURCES += \
     ../core/OrbitCalculator.cpp \
     ../core/ErrorHandler.cpp \
     ../business/TleBlocks.cpp \
+    ../business/PassPredictWorker.cpp \
+    ../business/PassPredictorService.cpp \
     ../perturb-master/src/perturb.cpp \
     ../perturb-master/src/sgp4.cpp \
     ../perturb-master/src/tle.cpp
@@ -53,7 +57,9 @@ HEADERS += \
     testutils.h \
     tst_runners.h \
     ../core/ErrorHandler.h \
-    ../core/AtomicCancelFlag.h
+    ../core/AtomicCancelFlag.h \
+    ../business/PassPredictWorker.h \
+    ../business/PassPredictorService.h
 
 # 测试数据（随源码分发）
 DISTFILES += \
