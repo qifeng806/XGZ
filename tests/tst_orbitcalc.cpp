@@ -198,9 +198,9 @@ void TstOrbitCalc::startsAboveMaskCaptured()
 
     // 必须存在一个 AOS ≤ 窗口起点 < TCA 的过境（进行中的过境被捕获）
     bool found = false;
+    const int64_t startMs = jdToMs(jdStart);
     for (const auto &ev : passes) {
-        if (ev.aosJdMs <= static_cast<int64_t>(jdStart * 86400000.0)
-            && static_cast<int64_t>(jdStart * 86400000.0) < ev.tcaJdMs) {
+        if (ev.aosJdMs <= startMs && startMs < ev.tcaJdMs) {
             found = true;
             break;
         }
@@ -240,12 +240,12 @@ void TstOrbitCalc::propagationFailureTolerated()
 void TstOrbitCalc::cooperativeCancellation()
 {
     Observer obs(60.0, 0.0, 0.0, 10.0);
-    std::atomic<bool> cancel{false};
+    auto cancel = makeAtomicCancelFlag();
 
     // 立即取消 → 空结果且快速返回
-    cancel.store(true);
+    cancel->set(true);
     OrbitCalculator calc;
-    auto early = calc.predict(keplerFn(90.0), obs, JD0, 24.0, &cancel);
+    auto early = calc.predict(keplerFn(90.0), obs, JD0, 24.0, cancel);
     QVERIFY(early.empty());
 
     // 基线: 未取消时的完整扫描调用量（60s 粗扫 + 逐过境细化）——
@@ -255,20 +255,20 @@ void TstOrbitCalc::cooperativeCancellation()
         ++fullCalls;
         return keplerFn(90.0)(jd);
     };
-    std::atomic<bool> never{false};
-    auto full = calc.predict(countingFull, obs, JD0, 24.0, &never);
+    auto never = makeAtomicCancelFlag();
+    auto full = calc.predict(countingFull, obs, JD0, 24.0, never);
     QVERIFY2(fullCalls > 1000 && !full.empty(),
              qPrintable(QString("基线扫描异常: 调用=%1 过境=%2")
                         .arg(fullCalls).arg(full.size())));
 
     // 中途取消: 传播函数内计数, 第 500 次调用后置位 → 提前返回
-    cancel.store(false);
+    cancel->set(false);
     int calls = 0;
     auto counting = [&calls, &cancel](double jd) -> std::optional<EciState> {
-        if (++calls >= 500) cancel.store(true);
+        if (++calls >= 500) cancel->set(true);
         return keplerFn(90.0)(jd);
     };
-    auto partial = calc.predict(counting, obs, JD0, 24.0, &cancel);
+    auto partial = calc.predict(counting, obs, JD0, 24.0, cancel);
     QVERIFY2(calls >= 500,
              qPrintable(QString("取消标志未生效: calls=%1").arg(calls)));
     QVERIFY2(calls < fullCalls / 5,

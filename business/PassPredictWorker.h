@@ -9,6 +9,7 @@
 #include <atomic>
 #include "core/models.h"
 #include "core/OrbitCalculator.h"
+#include "core/AtomicCancelFlag.h"
 
 // 注册跨线程信号槽所需的自定义类型
 Q_DECLARE_METATYPE(QVector<PassEvent>)
@@ -47,7 +48,7 @@ signals:
     void metaInfo(QString model, QString epochUtc, double ageDays);
 
 private:
-    std::atomic<bool> m_cancelled{false};
+    AtomicCancelFlagPtr m_cancelFlag;
     void runOneJob(const Job &job);   // 单任务执行体（run/runJobs 共用）
 };
 

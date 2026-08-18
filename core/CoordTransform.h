@@ -17,6 +17,15 @@ public:
     static constexpr double WGS84_E2         = 2.0 / WGS84_F_INV
                                              - 1.0 / (WGS84_F_INV * WGS84_F_INV);
 
+    // 缓存大小限制
+    static constexpr size_t MAX_CACHE_SIZE = 1000;
+    
+    // 清除缓存（在长时间运行或内存紧张时调用）
+    static void clearCache();
+    
+    // 获取缓存统计信息
+    static size_t getCacheSize();
+
     // ---- GMST 格林尼治平恒星时 ----
     // jdUt1: 儒略日（UT1，可用 UTC 近似，差值 < 0.9s）
     // 返回: GMST 弧度，范围 [0, 2π)

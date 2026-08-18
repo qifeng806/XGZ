@@ -8,6 +8,7 @@
 #include "business/TleBlocks.h"
 #include "core/TleParser.h"
 #include "core/CoordTransform.h"
+#include "core/ErrorHandler.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -25,7 +26,7 @@
 #include <QSplitter>
 #include <QTimeZone>
 #include <QCloseEvent>
-#include <QtConcurrent>   // 导出文件写入异步化（Qt6 属 QtCore, 无需额外模块）
+#include <QtConcurrent>   // 导出文件写入异步化（Qt6 中 QtConcurrent 是独立模块, XGZ.pro 已 QT += concurrent）
 
 // ============================================================================
 // 批量 TLE 导入辅助（文件局部）
@@ -484,19 +485,67 @@ void MainWindow::setupUI()
 }
 
 // ============================================================================
+// 断开所有信号槽连接
+// ============================================================================
+void MainWindow::disconnectAllConnections()
+{
+    // 断开所有按钮的信号槽连接
+    disconnect(m_predictBtn, &QPushButton::clicked, this, &MainWindow::onPredict);
+    disconnect(m_batchImportBtn, &QPushButton::clicked, this, &MainWindow::onBatchImport);
+    disconnect(m_onlineUpdateBtn, &QPushButton::clicked, this, &MainWindow::onOnlineUpdate);
+    disconnect(m_cancelBtn, &QPushButton::clicked, this, &MainWindow::onCancel);
+    disconnect(m_clearBtn, &QPushButton::clicked, this, &MainWindow::onClear);
+    disconnect(m_exportCsvBtn, &QPushButton::clicked, this, &MainWindow::onExportCSV);
+    disconnect(m_exportKmlBtn, &QPushButton::clicked, this, &MainWindow::onExportKML);
+    disconnect(m_exportJsonBtn, &QPushButton::clicked, this, &MainWindow::onExportJSON);
+    
+    // 断开TleFetcher的信号槽连接
+    if (m_tleFetcher) {
+        disconnect(m_tleFetcher.get(), &TleFetcher::downloaded, this, &MainWindow::onTleDownloaded);
+        disconnect(m_tleFetcher.get(), &TleFetcher::fetchError, this, &MainWindow::onTleError);
+        disconnect(m_tleFetcher.get(), &TleFetcher::finished, this, nullptr);
+    }
+    
+    // 断开PassPredictorService的信号槽连接
+    if (m_service) {
+        disconnect(m_service.get(), &PassPredictorService::resultReady, this, &MainWindow::onResultsReady);
+        disconnect(m_service.get(), &PassPredictorService::errorOccurred, this, &MainWindow::onError);
+        disconnect(m_service.get(), &PassPredictorService::batchProgress, this, nullptr);
+        disconnect(m_service.get(), &PassPredictorService::metaInfo, this, &MainWindow::onMetaInfo);
+    }
+    
+    // 断开表格选择模型的信号槽连接
+    if (m_passTable && m_passTable->selectionModel()) {
+        disconnect(m_passTable->selectionModel(), &QItemSelectionModel::currentRowChanged, this, nullptr);
+    }
+    
+    // 断开其他UI控件的信号槽连接
+    disconnect(m_visibleOnlyCheck, &QCheckBox::toggled, this, nullptr);
+    disconnect(m_timezoneCombo, &QComboBox::currentIndexChanged, this, nullptr);
+    
+    // 断开导出watcher的信号槽连接
+    if (m_exportWatcher) {
+        disconnect(m_exportWatcher.get(), &QFutureWatcher<QString>::finished, this, &MainWindow::onExportFinished);
+    }
+}
+
+// ============================================================================
 // 槽函数连接
 // ============================================================================
 void MainWindow::setupConnections()
 {
-    m_service = new PassPredictorService(this);
-    m_tleFetcher = new TleFetcher(this);
+    m_service = std::make_unique<PassPredictorService>(this);
+    m_tleFetcher = std::make_unique<TleFetcher>(this);
 
     connect(m_predictBtn, &QPushButton::clicked, this, &MainWindow::onPredict);
     connect(m_batchImportBtn, &QPushButton::clicked, this, &MainWindow::onBatchImport);
     connect(m_onlineUpdateBtn, &QPushButton::clicked, this, &MainWindow::onOnlineUpdate);
-    connect(m_tleFetcher, &TleFetcher::downloaded, this, &MainWindow::onTleDownloaded);
-    connect(m_tleFetcher, &TleFetcher::fetchError, this, &MainWindow::onTleError);
-    connect(m_tleFetcher, &TleFetcher::finished, this, [this]() {
+    connect(m_tleFetcher.get(), &TleFetcher::downloaded, this, &MainWindow::onTleDownloaded);
+    connect(m_tleFetcher.get(), &TleFetcher::fetchError, this, &MainWindow::onTleError);
+    connect(m_tleFetcher.get(), &TleFetcher::finished, this, [this]() {
+        // 检查对象是否仍然有效
+        if (!this->isVisible()) return;
+        
         m_onlineUpdateBtn->setEnabled(true);
         m_onlineUpdateBtn->setText("下载 TLE");
         setExportEnabled(true);   // 下载结束, 导出入口恢复
@@ -514,29 +563,41 @@ void MainWindow::setupConnections()
     connect(m_exportKmlBtn, &QPushButton::clicked, this, &MainWindow::onExportKML);
     connect(m_exportJsonBtn, &QPushButton::clicked, this, &MainWindow::onExportJSON);
 
-    connect(m_service, &PassPredictorService::resultReady,
+    connect(m_service.get(), &PassPredictorService::resultReady,
             this, &MainWindow::onResultsReady);
-    connect(m_service, &PassPredictorService::errorOccurred,
+    connect(m_service.get(), &PassPredictorService::errorOccurred,
             this, &MainWindow::onError);
-    connect(m_service, &PassPredictorService::batchProgress,
+    connect(m_service.get(), &PassPredictorService::batchProgress,
             this, [this](int completed, int total) {
+                // 检查对象是否仍然有效
+                if (!this->isVisible()) return;
+                
                 m_progressBar->setRange(0, total);
                 m_progressBar->setValue(completed);
             });
-    connect(m_service, &PassPredictorService::metaInfo,
+    connect(m_service.get(), &PassPredictorService::metaInfo,
             this, &MainWindow::onMetaInfo);
     // 点击/键盘方向键/程序化移动统一走 currentRowChanged（model 视图方案）
     connect(m_passTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
             this, [this](const QModelIndex &cur, const QModelIndex &) {
+                // 检查对象是否仍然有效
+                if (!this->isVisible()) return;
+                
                 if (cur.isValid()) onTableRowSelected(cur.row(), 0);
             });
     // 切换"仅显示可见过境"时立即重新过滤并刷新表格/图表
     connect(m_visibleOnlyCheck, &QCheckBox::toggled, this, [this](bool) {
+        // 检查对象是否仍然有效
+        if (!this->isVisible()) return;
+        
         if (m_currentPasses.isEmpty()) return;
         applyFilterAndRefresh();
     });
     // 时区切换: 无需重新计算, 重建表格时间列与表头即可（H3 修复）
     connect(m_timezoneCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        // 检查对象是否仍然有效
+        if (!this->isVisible()) return;
+        
         if (m_currentPasses.isEmpty()) return;
         applyFilterAndRefresh();
     });
@@ -547,23 +608,45 @@ void MainWindow::setupConnections()
 // ============================================================================
 void MainWindow::applyFilterAndRefresh()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
+    // 使用互斥锁保护共享数据
+    QMutexLocker dataLocker(&m_dataMutex);
+    
+    // 创建过滤后的数据副本
+    QVector<const PassEvent *> filtered;
     if (m_visibleOnlyCheck->isChecked()) {
-        QVector<const PassEvent *> filtered;
         for (const auto &p : m_currentPasses)
             if (p.visibility == PassVisibility::Visible)
                 filtered.append(&p);
-        m_filteredPasses = filtered;
     } else {
-        m_filteredPasses.clear();
-        m_filteredPasses.reserve(m_currentPasses.size());
+        filtered.reserve(m_currentPasses.size());
         for (const auto &p : m_currentPasses)
-            m_filteredPasses.append(&p);
+            filtered.append(&p);
     }
-    // 刷新前保存选中行与滚动位置（模型重置后均会丢失, 事后恢复,
-    // 过滤/时区切换/重新计算结果刷新时保留用户视野, 越界自动钳制）
+    
+    // 保存当前选中行与滚动位置
     const int prevRow = (m_tableModel->rowCount() > 0)
         ? m_passTable->currentIndex().row() : -1;
     const int prevScroll = m_passTable->verticalScrollBar()->value();
+    
+    // 更新过滤后的数据
+    m_filteredPasses = filtered;
+    
+    // 释放数据锁，允许UI更新
+    dataLocker.unlock();
+    
+    // 刷新UI（在主线程中执行）
     populateTable(m_filteredPasses);
     m_polarPlot->setPasses(m_filteredPasses);
     m_dopplerPlot->setPasses(m_filteredPasses);
@@ -584,10 +667,16 @@ void MainWindow::applyFilterAndRefresh()
     }
     // 恢复滚动位置（模型重置后滚动条归零; 超界值由视图自动钳制）
     m_passTable->verticalScrollBar()->setValue(prevScroll);
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::setStatusText(QLabel *label, const QString &text)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     label->setText(text);
     label->setToolTip(text);   // 文本超长时悬停查看完整内容
 }
@@ -597,6 +686,9 @@ void MainWindow::setStatusText(QLabel *label, const QString &text)
 // ============================================================================
 void MainWindow::onPredict()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     QString tle1 = m_tleInput1->toPlainText().trimmed();
     QString tle2 = m_tleInput2->toPlainText().trimmed();
 
@@ -634,6 +726,9 @@ void MainWindow::onPredict()
 // ============================================================================
 void MainWindow::onBatchImport()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     BatchTleDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted) return;
 
@@ -656,6 +751,9 @@ void MainWindow::onBatchImport()
 // ============================================================================
 void MainWindow::onOnlineUpdate()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     const QString groupId = m_tleGroupCombo->currentData().toString();
     if (groupId.isEmpty()) return;
     m_onlineUpdateBtn->setEnabled(false);
@@ -676,6 +774,9 @@ void MainWindow::onOnlineUpdate()
 // ============================================================================
 void MainWindow::onTleDownloaded(QString rawText, QString groupId)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     int incomplete = 0;
     const auto blocks = parseTleBlocks(rawText, &incomplete);
     if (blocks.isEmpty()) {
@@ -720,6 +821,9 @@ void MainWindow::onTleDownloaded(QString rawText, QString groupId)
 void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
                                       const QString &origin)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     QVector<PassPredictWorker::Job> jobs;
     int failed = 0;
     for (const auto &b : blocks) {
@@ -736,9 +840,49 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
     }
 
     if (jobs.isEmpty()) {
-        QMessageBox::warning(this, origin,
-            QString("共 %1 颗卫星，全部解析失败，请检查 TLE 内容")
-                .arg(blocks.size()));
+        QString errorMsg = QString("批量导入失败: 共 %1 颗卫星，全部解析失败\n\n").arg(blocks.size());
+        
+        // 分析失败原因并提供详细建议
+        if (blocks.size() > 0) {
+            errorMsg += "可能的原因:\n";
+            
+            // 检查TLE格式问题
+            bool hasLengthIssues = false;
+            bool hasFormatIssues = false;
+            
+            for (const auto &b : blocks) {
+                if (b.line1.length() < 69 || b.line2.length() < 69) {
+                    hasLengthIssues = true;
+                    break;
+                }
+            }
+            
+            if (hasLengthIssues) {
+                errorMsg += "• TLE行长度不足（每行至少需要69字符）\n";
+            }
+            
+            // 检查常见的格式问题
+            for (const auto &b : blocks) {
+                if (b.line1.length() >= 69 && b.line2.length() >= 69) {
+                    if (b.line1[0] != '1' || b.line2[0] != '2') {
+                        hasFormatIssues = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (hasFormatIssues) {
+                errorMsg += "• TLE行号错误（行1应以'1'开头，行2应以'2'开头）\n";
+            }
+            
+            errorMsg += "\n建议解决方案:\n";
+            errorMsg += "1. 检查TLE数据格式是否符合NORAD标准\n";
+            errorMsg += "2. 确保每颗卫星包含完整的两行根数数据\n";
+            errorMsg += "3. 尝试从Celestrak或其他可靠来源重新下载TLE\n";
+            errorMsg += "4. 使用单颗卫星导入测试具体的错误原因\n";
+        }
+        
+        QMessageBox::critical(this, origin, errorMsg);
         return;
     }
 
@@ -773,13 +917,39 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
 
 void MainWindow::onTleError(QString message)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     setStatusText(m_statusModel, "模型: TLE 下载失败");
-    QMessageBox::warning(this, "在线更新失败", message);
+    
+    // 添加错误恢复建议
+    QString detailedMessage = message + "\n\n错误恢复建议:\n";
+    detailedMessage += "1. 检查网络连接是否正常\n";
+    detailedMessage += "2. 确认Celestrak等数据源服务可用\n";
+    detailedMessage += "3. 尝试手动导入TLE文件作为替代方案\n";
+    detailedMessage += "4. 稍后重试在线更新功能\n";
+    detailedMessage += "5. 联系系统管理员检查网络配置\n";
+    
+    // 显示详细的错误对话框
+    QMessageBox::critical(this, "在线更新失败", detailedMessage);
+    
+    // 提供恢复选项
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this, "恢复选项", 
+        "是否尝试手动导入TLE文件？",
+        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+    
+    if (reply == QMessageBox::Yes) {
+        onBatchImport();  // 触发手动导入
+    }
 }
 
 // 从当前 UI 控件填充观测站参数与计算配置
 void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
 {
+    // 检查对象是否仍然有效
+    if (!qobject_cast<const MainWindow*>(this)) return;
+    
     job.observerLatDeg = m_latSpin->value();
     job.observerLonDeg = m_lonSpin->value();
     job.observerAltKm  = m_altSpin->value();
@@ -804,11 +974,18 @@ void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
 
 void MainWindow::onCancel()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     // 清除全部计算线程（内部先协作式取消，毫秒级退出；
     // 2000ms 全局截止防极端情况下无限阻塞 UI）
-    m_service->cleanupAll(2000);
+    if (m_service) {
+        m_service->cleanupAll(2000);
+    }
     // 中止在途的在线 TLE 下载（无活动请求时静默无效）
-    m_tleFetcher->cancel();
+    if (m_tleFetcher) {
+        m_tleFetcher->cancel();
+    }
     m_batchMode = false;
     m_batchErrors.clear();
     // 复位状态栏: 取消后不再显示已淘汰任务的模型/历元信息
@@ -826,11 +1003,30 @@ void MainWindow::onCancel()
 
 void MainWindow::onClear()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
     // 清空视图的同时终止在途计算, 防止迟到的结果覆盖刚清空的界面。
     // 用 cleanupAll(2000) 而非 cancelAll: 在途线程被协作式取消后回收
     // （quit+wait), 反复"开始→清除"不残留空转线程/worker 对象
-    m_service->cleanupAll(2000);
-    m_tleFetcher->cancel();
+    if (m_service) {
+        m_service->cleanupAll(2000);
+    }
+    if (m_tleFetcher) {
+        m_tleFetcher->cancel();
+    }
+    
+    // 使用互斥锁保护共享数据
+    QMutexLocker dataLocker(&m_dataMutex);
     m_batchMode = false;
     m_batchErrors.clear();
 
@@ -839,6 +1035,10 @@ void MainWindow::onClear()
     m_tableModel->setPasses({});   // 清空懒加载 model
     m_currentPasses.clear();
     m_filteredPasses.clear();   // 过滤结果同步清空（M4: 否则内存滞留过境数据）
+    
+    // 释放数据锁
+    dataLocker.unlock();
+    
     if (m_visibleOnlyCheck->isChecked()) {
         // 复位"仅显示可见过境"勾选（阻塞信号避免空数据下的多余刷新）
         m_visibleOnlyCheck->blockSignals(true);
@@ -858,19 +1058,46 @@ void MainWindow::onClear()
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     setExportEnabled(true);
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
-// 关闭窗口: 先协作式取消在途任务, 消除析构链中 cleanupAll 的等待冻结感
+// 关闭窗口: 先断开信号槽连接，再协作式取消任务，消除析构链中 cleanupAll 的等待冻结感
 // ============================================================================
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    m_service->cancelAll();      // 立即置协作取消标志, 线程毫秒级退出
-    m_tleFetcher->cancel();      // 中止在途下载
-    // 导出线程直接读共享数据: 关窗前必须等待其结束
-    //（本地文件写盘, 有界耗时; 结束后 watcher 随析构安全销毁）
-    if (m_exportWatcher && m_exportWatcher->isRunning())
+    // 设置关闭标志，通知所有线程正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        m_isClosing = true;
+    }
+    
+    // 唤醒所有等待的线程
+    m_dataReadyCondition.wakeAll();
+    
+    // 首先断开所有信号槽连接，防止在取消过程中有信号触发导致访问已销毁的对象
+    disconnectAllConnections();
+    
+    // 然后取消所有任务
+    if (m_service) {
+        m_service->cancelAll();      // 立即置协作取消标志, 线程毫秒级退出
+    }
+    if (m_tleFetcher) {
+        m_tleFetcher->cancel();      // 中止在途下载
+    }
+    
+    // 等待导出线程完成（协作式取消已置位, 导出任务毫秒级退出）
+    if (m_exportWatcher && m_exportWatcher->isRunning()) {
         m_exportWatcher->waitForFinished();
+    }
+    
+    // 等待所有UI更新操作完成
+    while (m_uiUpdateCounter > 0) {
+        QThread::msleep(10);
+    }
+    
     event->accept();
 }
 
@@ -879,44 +1106,100 @@ void MainWindow::closeEvent(QCloseEvent *event)
 // ============================================================================
 void MainWindow::onResultsReady(QVector<PassEvent> passes)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
+    // 使用互斥锁保护共享数据
+    QMutexLocker dataLocker(&m_dataMutex);
+    
+    // 更新当前过境数据
     m_currentPasses = passes;
+    
+    // 批量模式收尾状态
+    bool wasBatchMode = m_batchMode;
+    m_batchMode = false;
+    
+    // 保存批量错误信息
+    QStringList batchErrorsCopy;
+    if (wasBatchMode) {
+        batchErrorsCopy = m_batchErrors;
+        m_batchErrors.clear();
+    }
+    
+    // 释放数据锁
+    dataLocker.unlock();
+    
+    // 应用过滤和刷新
     applyFilterAndRefresh();
 
     // 批量模式收尾: 汇总失败信息（若有）
-    if (m_batchMode) {
-        m_batchMode = false;
-        if (!m_batchErrors.isEmpty()) {
-            // 大批量下失败条目可达数千, 弹窗只列前 20 条防止对话框失控
-            QStringList shown = m_batchErrors.mid(0, 20);
-            if (m_batchErrors.size() > shown.size())
-                shown << QString("…等 %1 项（共 %2 项）")
-                           .arg(m_batchErrors.size() - shown.size())
-                           .arg(m_batchErrors.size());
-            QMessageBox::warning(this, "批量预报",
-                QString("%1 颗卫星预报失败:\n%2")
-                    .arg(m_batchErrors.size())
-                    .arg(shown.join("\n")));
-            m_batchErrors.clear();
-        }
+    if (wasBatchMode && !batchErrorsCopy.isEmpty()) {
+        // 大批量下失败条目可达数千, 弹窗只列前 20 条防止对话框失控
+        QStringList shown = batchErrorsCopy.mid(0, 20);
+        if (batchErrorsCopy.size() > shown.size())
+            shown << QString("…等 %1 项（共 %2 项）")
+                       .arg(batchErrorsCopy.size() - shown.size())
+                       .arg(batchErrorsCopy.size());
+        QMessageBox::warning(this, "批量预报",
+            QString("%1 颗卫星预报失败:\n%2")
+                .arg(batchErrorsCopy.size())
+                .arg(shown.join("\n")));
     }
 
+    // 恢复控件状态
     m_predictBtn->setEnabled(true);
     m_batchImportBtn->setEnabled(true);
     m_onlineUpdateBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     setExportEnabled(true);
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::onError(QString msg)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
+    // 使用互斥锁保护共享数据
+    QMutexLocker dataLocker(&m_dataMutex);
+    
+    // 批量模式处理
     if (m_batchMode) {
         // 批量模式: 不弹阻塞对话框，累计到结果时统一汇总
         m_batchErrors << msg;
         setStatusText(m_statusModel,
                       QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
+        
+        // 减少UI更新计数器
+        m_uiUpdateCounter.fetchAndAddRelaxed(-1);
         return;
     }
+    
+    // 释放数据锁
+    dataLocker.unlock();
+    
+    // 单星任务错误处理
     QMessageBox::warning(this, "错误", msg);
     // 单星任务失败: 复位上次任务残留在状态栏的模型/历元, 与新错误提示并存
     // 会造成"明明失败了却显示模型/历元正常"的歧义
@@ -929,12 +1212,38 @@ void MainWindow::onError(QString msg)
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     setExportEnabled(true);
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
+    // 使用互斥锁保护共享数据
+    QMutexLocker dataLocker(&m_dataMutex);
+    
     // 批量模式由汇总文本统一展示，跳过逐星元信息
-    if (m_batchMode) return;
+    if (m_batchMode) {
+        // 减少UI更新计数器
+        m_uiUpdateCounter.fetchAndAddRelaxed(-1);
+        return;
+    }
+    
+    // 释放数据锁
+    dataLocker.unlock();
+    
     setStatusText(m_statusModel, QString("模型: %1").arg(model));
     // 行业惯例: TLE 龄期 > 14 天预报误差可达数 10 秒，需醒目提示
     const bool stale = ageDays > 14.0;
@@ -942,16 +1251,34 @@ void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
         .arg(epochUtc).arg(ageDays, 0, 'f', 1)
         .arg(stale ? " [数据过期]" : ""));
     m_statusEpoch->setStyleSheet(stale ? "color:#d04040;" : QString());
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::onTableRowSelected(int row, int col)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
     Q_UNUSED(col);
     if (row >= 0 && row < m_tableModel->rowCount()) {
         m_polarPlot->setSelectedPass(row);
         m_dopplerPlot->setSelectedPass(row);
         m_groundTrack->setSelectedPass(row);
     }
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -959,9 +1286,24 @@ void MainWindow::onTableRowSelected(int row, int col)
 // ============================================================================
 void MainWindow::populateTable(const QVector<const PassEvent *> &passes)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
     // 时区表头/时间列由 model 响应 setTimeZoneOffset 自动刷新
     m_tableModel->setTimeZoneOffset(m_timezoneCombo->currentData().toInt());
     m_tableModel->setPasses(passes);
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -969,6 +1311,9 @@ void MainWindow::populateTable(const QVector<const PassEvent *> &passes)
 // ============================================================================
 void MainWindow::setExportEnabled(bool on)
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
     m_exportCsvBtn->setEnabled(on);
     m_exportKmlBtn->setEnabled(on);
     m_exportJsonBtn->setEnabled(on);
@@ -1006,9 +1351,25 @@ void MainWindow::onExportJSON()
 
 void MainWindow::startExport(ExportKind kind, const QString &filePath)
 {
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 使用原子操作检查导出锁
+    if (m_exportLock.fetchAndAddAcquire(1) != 0) {
+        // 如果已经有导出在进行，直接返回
+        m_exportLock.fetchAndAddRelease(-1);
+        return;
+    }
+    
     // 计算/下载在途时禁止导出（入口按钮已同步禁用, 此处双保险）:
     // 导出线程直接读共享过境指针, 要求数据在导出期间不可变
-    if (m_progressBar->isVisible()) return;
+    if (m_progressBar->isVisible()) {
+        m_exportLock.fetchAndAddRelease(-1);
+        return;
+    }
 
     // 锁定一切数据变更入口（清除/计算/下载/取消/导出）:
     // 此后 onResultsReady / onClear 均不可达, m_currentPasses 不可变,
@@ -1021,15 +1382,24 @@ void MainWindow::startExport(ExportKind kind, const QString &filePath)
     m_cancelBtn->setEnabled(false);
 
     if (!m_exportWatcher) {
-        m_exportWatcher = new QFutureWatcher<QString>(this);
-        connect(m_exportWatcher, &QFutureWatcher<QString>::finished,
+        m_exportWatcher = std::make_unique<QFutureWatcher<QString>>(this);
+        connect(m_exportWatcher.get(), &QFutureWatcher<QString>::finished,
                 this, &MainWindow::onExportFinished);
     }
+    
+    // 使用互斥锁保护共享数据
+    QMutexLocker dataLocker(&m_dataMutex);
+    
     // 指针向量 COW 浅拷贝（8B/项, 微秒级）: 即使主线程重建 m_filteredPasses
     // 也不影响本线程的只读视图; 过境对象本身因入口锁定不可变
     const QVector<const PassEvent *> src = m_filteredPasses;
     const double taskLat = m_taskLatDeg;
     const double taskLon = m_taskLonDeg;
+    
+    // 释放数据锁
+    dataLocker.unlock();
+    
+    // 使用弱指针模式，确保在导出过程中对象被销毁时能够安全处理
     m_exportWatcher->setFuture(
         QtConcurrent::run([kind, filePath, taskLat, taskLon, src]() -> QString {
             switch (kind) {
@@ -1043,6 +1413,21 @@ void MainWindow::startExport(ExportKind kind, const QString &filePath)
 
 void MainWindow::onExportFinished()
 {
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 检查是否正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        if (m_isClosing) return;
+    }
+    
+    // 增加UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(1);
+    
+    // 释放导出锁
+    m_exportLock.fetchAndAddRelease(-1);
+    
     // 无论成败都恢复全部入口（仅在 watcher 回调, 无泄漏）;
     // 共享数据指针的生命周期由 startExport 的入口锁定保证
     setExportEnabled(true);
@@ -1054,6 +1439,9 @@ void MainWindow::onExportFinished()
     const QString err = m_exportWatcher->result();
     if (!err.isEmpty())
         QMessageBox::warning(this, "导出失败", err);
+    
+    // 减少UI更新计数器
+    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -1061,14 +1449,244 @@ void MainWindow::onExportFinished()
 // ============================================================================
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
+    , m_uiUpdateCounter(0)
+    , m_isClosing(false)
+    , m_exportLock(0)
 {
+    // 初始化错误处理系统
+    setupErrorHandling();
+    
     setupUI();
+    // 确保UI完全设置完成后再建立信号槽连接
     setupConnections();
+    
+    // 初始化完成，显示欢迎信息
+    #ifdef QT_DEBUG
+    qDebug() << "MainWindow initialized successfully";
+    #endif
 }
 
 MainWindow::~MainWindow()
 {
+    // 设置关闭标志，通知所有线程正在关闭
+    {
+        QMutexLocker locker(&m_dataMutex);
+        m_isClosing = true;
+    }
+    
+    // 唤醒所有等待的线程
+    m_dataReadyCondition.wakeAll();
+    
+    // 在析构前断开所有信号槽连接，防止在对象销毁后有信号触发
+    disconnectAllConnections();
+    
+    // 等待所有UI更新操作完成
+    while (m_uiUpdateCounter > 0) {
+        QThread::msleep(10);
+    }
+    
+    // 清理错误处理相关资源
+    ErrorHandler::instance().clearErrorHistory();
+    
     // 服务对象由 Qt 父子关系自动管理，无需显式调用
+}
+
+void MainWindow::setupErrorHandling()
+{
+    // 连接错误处理系统的信号
+    connect(&ErrorHandler::instance(), &ErrorHandler::errorOccurred,
+            this, &MainWindow::onErrorOccurred);
+    
+    connect(&ErrorHandler::instance(), &ErrorHandler::errorRecoveryAttempt,
+            this, &MainWindow::onErrorRecoveryAttempt);
+    
+    connect(&ErrorHandler::instance(), &ErrorHandler::errorRecoveryResult,
+            this, &MainWindow::onErrorRecoveryResult);
+    
+    // 设置是否启用自动恢复
+    ErrorHandler::instance().setAutoRecoveryEnabled(true);
+    
+    #ifdef QT_DEBUG
+    qDebug() << "Error handling system initialized";
+    #endif
+}
+
+void MainWindow::onErrorOccurred(const ErrorInfo& error)
+{
+    // 根据错误严重程度决定如何处理
+    switch (error.severity) {
+    case ErrorSeverity::INFO:
+        // 信息性错误，只在状态栏显示
+        setStatusText(m_statusModel, QString("信息: %1").arg(error.message));
+        break;
+        
+    case ErrorSeverity::WARNING:
+        // 警告错误，显示在状态栏并可能影响UI
+        setStatusText(m_statusModel, QString("警告: %1").arg(error.message));
+        
+        // 如果是TLE解析警告，可以继续处理
+        if (error.type == ErrorType::TLE_PARSE_ERROR) {
+            qDebug() << "TLE parse warning (satellite:" << error.satelliteId << "):" << error.message;
+        }
+        break;
+        
+    case ErrorSeverity::ERROR:
+        // 错误，状态栏显示（阻塞对话框由 worker→service→onError 路径统一处理:
+        // 单星弹窗/批量汇总, 避免此处无条件弹窗导致重复弹窗或批量刷屏）
+        setStatusText(m_statusModel, QString("错误: %1").arg(error.message));
+        
+        // 如果是网络错误，可能需要重试
+        if (error.type == ErrorType::NETWORK_ERROR) {
+            handleNetworkError(error);
+        }
+        break;
+        
+    case ErrorSeverity::CRITICAL:
+        // 严重错误，显示严重错误对话框
+        setStatusText(m_statusModel, QString("严重错误: %1").arg(error.message));
+        
+        QMessageBox::critical(this, "严重错误", 
+                            error.message + "\n\n详细信息:\n" + error.detailedContext + 
+                            "\n\n建议操作:\n" + error.suggestedAction);
+        
+        // 对于严重错误，可能需要禁用某些功能
+        handleCriticalError(error);
+        break;
+    }
+}
+
+void MainWindow::onErrorRecoveryAttempt(const ErrorInfo& error, RecoveryAction action)
+{
+    // 显示恢复尝试信息
+    QString actionText;
+    switch (action) {
+    case RecoveryAction::RETRY:
+        actionText = "重试";
+        break;
+    case RecoveryAction::SKIP:
+        actionText = "跳过";
+        break;
+    case RecoveryAction::FALLBACK:
+        actionText = "使用备用方案";
+        break;
+    case RecoveryAction::ABORT:
+        actionText = "中止";
+        break;
+    case RecoveryAction::MANUAL_INTERVENTION:
+        actionText = "需要人工干预";
+        break;
+    }
+    
+    setStatusText(m_statusModel, QString("恢复尝试: %1 (%2)").arg(error.message).arg(actionText));
+    
+    #ifdef QT_DEBUG
+    qDebug() << "Recovery attempt for error:" << error.message << "Action:" << actionText;
+    #endif
+}
+
+void MainWindow::onErrorRecoveryResult(const ErrorInfo& error, bool success)
+{
+    if (success) {
+        setStatusText(m_statusModel, QString("恢复成功: %1").arg(error.message));
+        
+        // 如果是TLE解析错误恢复成功，可能需要更新UI
+        if (error.type == ErrorType::TLE_PARSE_ERROR) {
+            // 可以在这里更新TLE列表或重新计算
+        }
+    } else {
+        setStatusText(m_statusModel, QString("恢复失败: %1").arg(error.message));
+        
+        // 恢复失败，显示详细信息
+        QMessageBox::information(this, "恢复失败", 
+                               error.message + "\n\n详细信息:\n" + error.detailedContext + 
+                               "\n\n建议操作:\n" + error.suggestedAction);
+    }
+}
+
+void MainWindow::handleNetworkError(const ErrorInfo& error)
+{
+    // 网络错误的特殊处理
+    if (error.type == ErrorType::NETWORK_ERROR) {
+        // 检查是否应该重试
+        bool shouldRetry = ErrorHandler::instance().shouldRetry(error);
+        
+        if (shouldRetry) {
+            // 显示重试对话框
+            QMessageBox::StandardButton reply = QMessageBox::question(
+                this, "网络错误", 
+                error.message + "\n\n是否重试？",
+                QMessageBox::Yes | QMessageBox::No);
+            
+            if (reply == QMessageBox::Yes) {
+                // 执行重试逻辑
+                retryNetworkOperation(error);
+            }
+        }
+    }
+}
+
+void MainWindow::handleCriticalError(const ErrorInfo& error)
+{
+    // 严重错误的特殊处理
+    if (error.type == ErrorType::CONFIG_ERROR) {
+        // 配置错误，可能需要重置配置
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this, "配置错误", 
+            error.message + "\n\n是否重置为默认配置？",
+            QMessageBox::Yes | QMessageBox::No);
+        
+        if (reply == QMessageBox::Yes) {
+            resetToDefaultConfig();
+        }
+    }
+    
+    // 对于其他严重错误，可能需要禁用某些功能
+    if (error.type == ErrorType::FILE_IO_ERROR) {
+        // 文件IO错误，禁用导出功能
+        setExportEnabled(false);
+    }
+}
+
+void MainWindow::retryNetworkOperation(const ErrorInfo &)
+{
+    // 重试网络操作的逻辑
+    // 这里可以根据具体的网络操作类型来实现重试逻辑
+    
+    #ifdef QT_DEBUG
+    qDebug() << "Retrying network operation for error:" << error.message;
+    #endif
+    
+    // 显示重试进度
+    setStatusText(m_statusModel, "正在重试网络操作...");
+    
+    // 这里可以添加具体的重试逻辑，比如重新下载TLE数据
+    // 例如：m_service->fetchTleData();
+}
+
+void MainWindow::resetToDefaultConfig()
+{
+    // 重置为默认配置的逻辑
+    // 这里可以重置所有的UI控件到默认值
+    
+    #ifdef QT_DEBUG
+    qDebug() << "Resetting to default configuration";
+    #endif
+    
+    // 重置观测站位置
+    m_latSpin->setValue(39.9042);  // 北京纬度
+    m_lonSpin->setValue(116.4074); // 北京经度
+    m_altSpin->setValue(0.05);     // 50米海拔
+    
+    // 重置其他配置
+    m_maskSpin->setValue(10.0);    // 10度掩星角
+    m_hoursSpin->setValue(24.0);    // 24小时预测
+    m_freqSpin->setValue(437.800);  // 437.800 MHz（与 setupUI 默认一致）
+    m_stdMagSpin->setValue(4.5);    // 标准星等（与 setupUI 默认一致）
+    
+    // 重置暗天阈值
+    m_darkSkyCombo->setCurrentIndex(0);
+    
+    setStatusText(m_statusModel, "配置已重置为默认值");
 }
 
 #include "MainWindow.moc"

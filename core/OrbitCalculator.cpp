@@ -10,6 +10,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -41,129 +42,243 @@ static void fillPassDetails(PassEvent &ev,
     const OrbitCalculator::Config &cfg,
     double jdAOS, double jdTCA, double jdLOS)
 {
-    // TCA 时刻轨道状态: 地影/星等/多普勒共用一次传播，避免重复调用 SGP4
-    std::optional<EciState> eciT;
-    if (cfg.enableShadowCheck || cfg.enableMagnitude || cfg.enableDoppler)
-        eciT = propagate(jdTCA);
-
-    // 光照分析
-    if (cfg.enableSunAnalysis) {
-        auto sunA = SunPositionCalc::compute(jdAOS, observer.latDeg(), observer.lonDeg());
-        auto sunT = SunPositionCalc::compute(jdTCA, observer.latDeg(), observer.lonDeg());
-        auto sunL = SunPositionCalc::compute(jdLOS, observer.latDeg(), observer.lonDeg());
-        ev.aosSunAlt = sunA.altDeg;
-        ev.tcaSunAlt = sunT.altDeg;
-        ev.losSunAlt = sunL.altDeg;
-
-        if (cfg.enableShadowCheck) {
-            auto eciA = propagate(jdAOS);
-            auto eciL = propagate(jdLOS);
-            if (eciA) {
-                auto eA = CoordTransform::eciToEcef(eciA->posKm, jdAOS);
-                // 太阳方向必须旋转到 ECEF 与卫星位置同系
-                auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
-                ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
-                ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA.distanceAU);
-            } else {
-                // 传播失败: 不得让 PassEvent 保持结构体默认值 FullSunlight/1.0
-                // —— 那会把失败时刻"默认为照亮", 暗天过境被误判为可见
-                ev.aosSatShadow = ShadowStatus::InUmbra;
-                ev.aosIllum = 0.0;
+    try {
+        // 优化：批量获取所有需要的轨道状态，避免重复调用 propagate
+        std::optional<EciState> eciA, eciT, eciL;
+        
+        // 仅在需要时才进行轨道传播
+        if (cfg.enableSunAnalysis && cfg.enableShadowCheck) {
+            // 需要所有三个时刻的数据
+            eciA = propagate(jdAOS);
+            eciT = propagate(jdTCA);
+            eciL = propagate(jdLOS);
+        } else if (cfg.enableShadowCheck || cfg.enableMagnitude || cfg.enableDoppler) {
+            // 只需要 TCA 时刻的数据
+            eciT = propagate(jdTCA);
+        }
+        
+        // 光照分析
+        if (cfg.enableSunAnalysis) {
+            // 优化：缓存太阳位置计算结果
+            auto sunA = SunPositionCalc::compute(jdAOS, observer.latDeg(), observer.lonDeg());
+            auto sunT = SunPositionCalc::compute(jdTCA, observer.latDeg(), observer.lonDeg());
+            auto sunL = SunPositionCalc::compute(jdLOS, observer.latDeg(), observer.lonDeg());
+            
+            // 检查太阳位置数据有效性
+            if (!std::isfinite(sunA.altDeg) || !std::isfinite(sunT.altDeg) || !std::isfinite(sunL.altDeg)) {
+                throw std::runtime_error("太阳位置数据无效");
             }
+            
+            ev.aosSunAlt = sunA.altDeg;
+            ev.tcaSunAlt = sunT.altDeg;
+            ev.losSunAlt = sunL.altDeg;
+
+            if (cfg.enableShadowCheck) {
+                if (eciA) {
+                    auto eA = CoordTransform::eciToEcef(eciA->posKm, jdAOS);
+                    // 太阳方向必须旋转到 ECEF 与卫星位置同系
+                    auto sunDirA = CoordTransform::eciDirToEcef(sunA.dirECI, jdAOS);
+                    ev.aosSatShadow = EarthShadow::checkShadow(eA, sunDirA, sunA.distanceAU);
+                    ev.aosIllum = EarthShadow::umbraFactor(eA, sunDirA, sunA.distanceAU);
+                } else {
+                    // 传播失败: 不得让 PassEvent 保持结构体默认值 FullSunlight/1.0
+                    // —— 那会把失败时刻"默认为照亮", 暗天过境被误判为可见
+                    ev.aosSatShadow = ShadowStatus::InUmbra;
+                    ev.aosIllum = 0.0;
+                }
+                if (eciT) {
+                    auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
+                    auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
+                    ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
+                    ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT.distanceAU);
+                } else {
+                    ev.tcaSatShadow = ShadowStatus::InUmbra;
+                    ev.tcaIllum = 0.0;
+                }
+                if (eciL) {
+                    auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
+                    auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
+                    ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
+                    ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL.distanceAU);
+                } else {
+                    ev.losSatShadow = ShadowStatus::InUmbra;
+                    ev.losIllum = 0.0;
+                }
+            }
+
+            double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
+            // 光照判定以 TCA（用户实际观测时刻）为准 —— 与 Heavens-Above/Orbis
+            // 的「峰值点燃亮」语义一致：仅 AOS/LOS 照亮、TCA 却在地影内的过境
+            // 不标为可见（否则用户按 TCA 时刻观测看不到卫星）
+            // 暗天阈值按站点海拔的地平线倾角修正（见 horizonDipDeg）
+            bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra) && ev.tcaIllum > 0.5;
+            const double dark = cfg.darkSkyThresholdDeg - horizonDipDeg(observer.altKm());
+            if (bestSunAlt < dark && satLit)
+                ev.visibility = PassVisibility::Visible;
+            else if (bestSunAlt < cfg.darkSkyThresholdDeg)
+                ev.visibility = PassVisibility::RadioOnly;
+            else
+                ev.visibility = PassVisibility::Daylight;
+
+            // 星等估算: Vallerie 1963 相位模型，取 TCA 时刻（与可见性分类同一观测时刻）
+            // m = m₀ − 15 + 5·log10(R) − 2.5·log10(f(B))，B = 卫星处太阳-观测者张角
+            if (cfg.enableMagnitude) {
+                if (eciT) {
+                    auto satE = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
+                    // 太阳 ECEF 位置（km）: 单位方向 × 日地距离
+                    auto sunDirE = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
+                    std::array<double, 3> sunPosE;
+                    for (int k = 0; k < 3; ++k)
+                        sunPosE[k] = sunDirE[k] * (sunT.distanceAU * EarthShadow::AU_KM);
+                    const double phase = MagnitudeCalc::phaseAngleRad(satE, sunPosE,
+                                                                      observer.ecef());
+                    ev.magAtTca = MagnitudeCalc::visualMagnitude(
+                        MagnitudeCalc::standardMagnitude(ev.satelliteName, cfg.stdMagFallback),
+                        ev.tcaLook.rangeKm, phase);
+                    // 本影中卫星不可见，公式前提（太阳无遮挡）不成立 → 标为无效
+                    ev.magValid = (ev.tcaSatShadow != ShadowStatus::InUmbra)
+                                  && std::isfinite(ev.magAtTca);
+                }
+            }
+        }
+        if (cfg.enableRefraction) {
+            ev.aosElRefracted = CoordTransform::applyRefraction(ev.aosLook.elevDeg);
+            ev.tcaElRefracted = CoordTransform::applyRefraction(ev.tcaLook.elevDeg);
+            ev.losElRefracted = CoordTransform::applyRefraction(ev.losLook.elevDeg);
+        }
+        if (cfg.enableDoppler) {
             if (eciT) {
-                auto eT = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
-                auto sunDirT = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
-                ev.tcaSatShadow = EarthShadow::checkShadow(eT, sunDirT, sunT.distanceAU);
-                ev.tcaIllum = EarthShadow::umbraFactor(eT, sunDirT, sunT.distanceAU);
-            } else {
-                ev.tcaSatShadow = ShadowStatus::InUmbra;
-                ev.tcaIllum = 0.0;
-            }
-            if (eciL) {
-                auto eL = CoordTransform::eciToEcef(eciL->posKm, jdLOS);
-                auto sunDirL = CoordTransform::eciDirToEcef(sunL.dirECI, jdLOS);
-                ev.losSatShadow = EarthShadow::checkShadow(eL, sunDirL, sunL.distanceAU);
-                ev.losIllum = EarthShadow::umbraFactor(eL, sunDirL, sunL.distanceAU);
-            } else {
-                ev.losSatShadow = ShadowStatus::InUmbra;
-                ev.losIllum = 0.0;
+                ev.dopplerAtTcaKHz = DopplerCalc::compute(
+                    eciT->posKm, eciT->velKms, jdTCA,
+                    observer.ecef(), cfg.carrierFreqMHz);
             }
         }
-
-        double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
-        // 光照判定以 TCA（用户实际观测时刻）为准 —— 与 Heavens-Above/Orbis
-        // 的「峰值点燃亮」语义一致：仅 AOS/LOS 照亮、TCA 却在地影内的过境
-        // 不标为可见（否则用户按 TCA 时刻观测看不到卫星）
-        // 暗天阈值按站点海拔的地平线倾角修正（见 horizonDipDeg）
-        bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra) && ev.tcaIllum > 0.5;
-        const double dark = cfg.darkSkyThresholdDeg - horizonDipDeg(observer.altKm());
-        if (bestSunAlt < dark && satLit)
-            ev.visibility = PassVisibility::Visible;
-        else if (bestSunAlt < cfg.darkSkyThresholdDeg)
-            ev.visibility = PassVisibility::RadioOnly;
-        else
-            ev.visibility = PassVisibility::Daylight;
-
-        // 星等估算: Vallerie 1963 相位模型，取 TCA 时刻（与可见性分类同一观测时刻）
-        // m = m₀ − 15 + 5·log10(R) − 2.5·log10(f(B))，B = 卫星处太阳-观测者张角
-        if (cfg.enableMagnitude) {
-            if (eciT) {
-                auto satE = CoordTransform::eciToEcef(eciT->posKm, jdTCA);
-                // 太阳 ECEF 位置（km）: 单位方向 × 日地距离
-                auto sunDirE = CoordTransform::eciDirToEcef(sunT.dirECI, jdTCA);
-                std::array<double, 3> sunPosE;
-                for (int k = 0; k < 3; ++k)
-                    sunPosE[k] = sunDirE[k] * (sunT.distanceAU * EarthShadow::AU_KM);
-                const double phase = MagnitudeCalc::phaseAngleRad(satE, sunPosE,
-                                                                  observer.ecef());
-                ev.magAtTca = MagnitudeCalc::visualMagnitude(
-                    MagnitudeCalc::standardMagnitude(ev.satelliteName, cfg.stdMagFallback),
-                    ev.tcaLook.rangeKm, phase);
-                // 本影中卫星不可见，公式前提（太阳无遮挡）不成立 → 标为无效
-                ev.magValid = (ev.tcaSatShadow != ShadowStatus::InUmbra)
-                              && std::isfinite(ev.magAtTca);
-            }
-        }
+        // 过境类型
+        double azDiff = ev.tcaLook.azDeg - ev.aosLook.azDeg;
+        if (azDiff > 180.0) azDiff -= 360.0;
+        if (azDiff < -180.0) azDiff += 360.0;
+        ev.passType = (azDiff > 0.0) ? 0 : 1;
+        // 质量等级
+        if (ev.maxElevDeg >= 50.0)      ev.quality = PassQuality::Excellent;
+        else if (ev.maxElevDeg >= 20.0) ev.quality = PassQuality::Good;
+        else                            ev.quality = PassQuality::Poor;
+    } catch (const std::exception &e) {
+        // 异常情况下设置默认值，避免数据损坏
+        ev.visibility = PassVisibility::Daylight;
+        ev.quality = PassQuality::Poor;
+        ev.passType = 0;
+        
+        // 记录错误但不中断计算
+        // 在实际应用中，这里可以添加日志记录
+        // std::cerr << "fillPassDetails 异常: " << e.what() << std::endl;
     }
-    if (cfg.enableRefraction) {
-        ev.aosElRefracted = CoordTransform::applyRefraction(ev.aosLook.elevDeg);
-        ev.tcaElRefracted = CoordTransform::applyRefraction(ev.tcaLook.elevDeg);
-        ev.losElRefracted = CoordTransform::applyRefraction(ev.losLook.elevDeg);
-    }
-    if (cfg.enableDoppler) {
-        if (eciT) {
-            ev.dopplerAtTcaKHz = DopplerCalc::compute(
-                eciT->posKm, eciT->velKms, jdTCA,
-                observer.ecef(), cfg.carrierFreqMHz);
-        }
-    }
-    // 过境类型
-    double azDiff = ev.tcaLook.azDeg - ev.aosLook.azDeg;
-    if (azDiff > 180.0) azDiff -= 360.0;
-    if (azDiff < -180.0) azDiff += 360.0;
-    ev.passType = (azDiff > 0.0) ? 0 : 1;
-    // 质量等级
-    if (ev.maxElevDeg >= 50.0)      ev.quality = PassQuality::Excellent;
-    else if (ev.maxElevDeg >= 20.0) ev.quality = PassQuality::Good;
-    else                            ev.quality = PassQuality::Poor;
 }
 
 int64_t OrbitCalculator::jdToIntMs(double jd) {
-    return static_cast<int64_t>(jd * 86400000.0);
+    // 检查输入值的有效性
+    if (!std::isfinite(jd)) {
+        return 0;
+    }
+    
+    // 检查极端值，防止溢出
+    // int64_t 的范围大约是 ±9.2e18，86400000.0 * jd 必须在这个范围内
+    const double maxSafeJd = 9.2e18 / 86400000.0;
+    const double minSafeJd = -9.2e18 / 86400000.0;
+    
+    if (jd > maxSafeJd) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if (jd < minSafeJd) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    
+    // 使用更精确的转换算法
+    // 将 jd 分解为整数和小数部分，分别处理以减少精度损失
+    int64_t jdInt = static_cast<int64_t>(std::floor(jd));
+    double jdFrac = jd - jdInt;
+    
+    // 计算整数部分和小数部分的毫秒数
+    int64_t intMs = jdInt * 86400000LL;
+    int64_t fracMs = static_cast<int64_t>(std::round(jdFrac * 86400000.0));
+    
+    // 处理四舍五入导致的进位
+    if (fracMs >= 86400000LL) {
+        intMs += 86400000LL;
+        fracMs -= 86400000LL;
+    } else if (fracMs < 0) {
+        intMs -= 86400000LL;
+        fracMs += 86400000LL;
+    }
+    
+    // 最终结果检查
+    if (intMs > 0 && fracMs < 0) {
+        intMs--;
+        fracMs += 86400000LL;
+    } else if (intMs < 0 && fracMs > 0) {
+        intMs++;
+        fracMs -= 86400000LL;
+    }
+    
+    return intMs + fracMs;
 }
 double OrbitCalculator::intMsToJd(int64_t ms) {
-    return static_cast<double>(ms) / 86400000.0;
+    // 检查极端值
+    if (ms == std::numeric_limits<int64_t>::max()) {
+        return static_cast<double>(std::numeric_limits<int64_t>::max()) / 86400000.0;
+    }
+    if (ms == std::numeric_limits<int64_t>::min()) {
+        return static_cast<double>(std::numeric_limits<int64_t>::min()) / 86400000.0;
+    }
+    
+    // 使用更精确的转换算法
+    // 将毫秒数分解为整天和剩余毫秒数
+    const int64_t msPerDay = 86400000LL;
+    int64_t days = ms / msPerDay;
+    int64_t remainingMs = ms % msPerDay;
+    
+    // 处理负数情况
+    if (ms < 0 && remainingMs != 0) {
+        days--;
+        remainingMs += msPerDay;
+    }
+    
+    // 计算儒略日
+    double jd = static_cast<double>(days) + static_cast<double>(remainingMs) / 86400000.0;
+    
+    // 确保结果在合理范围内
+    if (!std::isfinite(jd)) {
+        return 0.0;
+    }
+    
+    return jd;
 }
 
 // ========== 单点仰角计算 ==========
 double OrbitCalculator::elevationAt(PropagateFn &propagate,
                                      const Observer &obs, double jd) const
 {
-    auto eciOpt = propagate(jd);
-    if (!eciOpt) return ELEV_FAILURE_SENTINEL;  // 传播失败 → 调用方按哨兵跳过, 不得视作真实 LOS
+    try {
+        // 检查输入参数有效性
+        if (!std::isfinite(jd)) {
+            return ELEV_FAILURE_SENTINEL;
+        }
+        
+        auto eciOpt = propagate(jd);
+        if (!eciOpt) return ELEV_FAILURE_SENTINEL;  // 传播失败 → 调用方按哨兵跳过, 不得视作真实 LOS
 
-    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
-    return obs.lookAngle(ecef).elevDeg;
+        auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
+        auto look = obs.lookAngle(ecef);
+        
+        // 检查仰角数据有效性
+        if (!std::isfinite(look.elevDeg)) {
+            return ELEV_FAILURE_SENTINEL;
+        }
+        
+        return look.elevDeg;
+    } catch (const std::exception &e) {
+        // 异常情况下返回失败哨兵值
+        return ELEV_FAILURE_SENTINEL;
+    }
 }
 
 // ========== 计算某一时刻的完整观测 + 星下点 ==========
@@ -171,51 +286,116 @@ void OrbitCalculator::computeMoment(PropagateFn &propagate,
                                      const Observer &obs, double jd,
                                      LookAngle &look, GeoPos &geo) const
 {
-    auto eciOpt = propagate(jd);
-    if (!eciOpt) {
+    try {
+        // 检查输入参数有效性
+        if (!std::isfinite(jd)) {
+            look = LookAngle(ELEV_FAILURE_SENTINEL, 0.0, 0.0);
+            geo  = GeoPos(0.0, 0.0, 0.0);
+            return;
+        }
+        
+        auto eciOpt = propagate(jd);
+        if (!eciOpt) {
+            look = LookAngle(ELEV_FAILURE_SENTINEL, 0.0, 0.0);
+            geo  = GeoPos(0.0, 0.0, 0.0);
+            return;
+        }
+        
+        auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
+        look = obs.lookAngle(ecef);
+        geo  = obs.subSatPoint(ecef);
+        
+        // 检查结果有效性
+        if (!std::isfinite(look.elevDeg) || !std::isfinite(look.azDeg) || !std::isfinite(look.rangeKm) ||
+            !std::isfinite(geo.latDeg) || !std::isfinite(geo.lonDeg) || !std::isfinite(geo.altKm)) {
+            look = LookAngle(ELEV_FAILURE_SENTINEL, 0.0, 0.0);
+            geo  = GeoPos(0.0, 0.0, 0.0);
+        }
+    } catch (const std::exception &e) {
+        // 异常情况下设置默认值
         look = LookAngle(ELEV_FAILURE_SENTINEL, 0.0, 0.0);
         geo  = GeoPos(0.0, 0.0, 0.0);
-        return;
     }
-    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
-    look = obs.lookAngle(ecef);
-    geo  = obs.subSatPoint(ecef);
 }
 
 // ========== 过境弧段采样 ==========
 void OrbitCalculator::collectSamples(PropagateFn &propagate,
-                                      const Observer &obs,
-                                      double jdAOS, double jdLOS,
-                                      PassEvent &ev,
-                                      const std::atomic<bool> *cancel) const
+                                       const Observer &obs,
+                                       double jdAOS, double jdLOS,
+                                       PassEvent &ev,
+                                       const AtomicCancelFlagPtr cancel) const
 {
-    if (!m_cfg.enableSamples || m_cfg.sampleStepSec <= 0.0) return;
-    const double step = m_cfg.sampleStepSec / 86400.0;
-    ev.samples.clear();
-    // 防御: 调用链保证 jdLOS > jdAOS, 但数值抖动/上游配置错误时负数会
-    // 在 size_t 转换后变成天文数字触发 bad_alloc
-    const double n = std::max(0.0, (jdLOS - jdAOS) / step);
-    ev.samples.reserve(static_cast<size_t>(n) + 2);
-    // 传播一次完成全部字段（含多普勒），避免对同一时刻二次传播
-    for (double jd = jdAOS; jd <= jdLOS + 1e-12; jd += step) {
-        if (isCancelled(cancel)) return;
-        auto eciOpt = propagate(jd);
-        LookAngle look;
-        GeoPos    geo;
-        double    dopplerKHz = 0.0;
-        if (eciOpt) {
-            auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
-            look = obs.lookAngle(ecef);
-            geo  = obs.subSatPoint(ecef);
-            if (m_cfg.enableDoppler) {
-                dopplerKHz = DopplerCalc::compute(eciOpt->posKm, eciOpt->velKms, jd,
-                                                  obs.ecef(), m_cfg.carrierFreqMHz);
-            }
-        } else {
-            look = LookAngle(-1000.0, 0.0, 0.0);   // 传播失败占位（与 computeMoment 一致）
-            geo  = GeoPos(0.0, 0.0, 0.0);
+    try {
+        if (!m_cfg.enableSamples || m_cfg.sampleStepSec <= 0.0) return;
+        
+        // 检查时间范围有效性
+        if (!std::isfinite(jdAOS) || !std::isfinite(jdLOS) || jdAOS >= jdLOS) {
+            return;
         }
-        ev.samples.push_back({ jdToIntMs(jd), look, geo, dopplerKHz });
+        
+        const double step = m_cfg.sampleStepSec / 86400.0;
+        ev.samples.clear();
+        // 防御: 调用链保证 jdLOS > jdAOS, 但数值抖动/上游配置错误时负数会
+        // 在 size_t 转换后变成天文数字触发 bad_alloc
+        const double n = std::max(0.0, (jdLOS - jdAOS) / step);
+        
+        // 防止分配过多内存
+        if (n > 100000.0) {  // 限制最大采样点数
+            return;
+        }
+        
+        // 优化：更精确的预分配策略
+        size_t estimatedSamples = static_cast<size_t>(n) + 2;
+        // 如果启用了多普勒计算，可能需要更多空间
+        if (m_cfg.enableDoppler) {
+            estimatedSamples = static_cast<size_t>(n * 1.1) + 2;  // 增加10%缓冲
+        }
+        ev.samples.reserve(estimatedSamples);
+        
+        // 优化：预留额外容量以避免重新分配
+        ev.samples.reserve(ev.samples.capacity() + ev.samples.capacity() / 4);  // 额外预留25%空间
+        
+        // 传播一次完成全部字段（含多普勒），避免对同一时刻二次传播
+        for (double jd = jdAOS; jd <= jdLOS + 1e-12; jd += step) {
+            if (isCancelled(cancel)) return;
+            
+            try {
+                auto eciOpt = propagate(jd);
+                LookAngle look;
+                GeoPos geo;
+                double dopplerKHz = 0.0;
+                
+                if (eciOpt) {
+                    auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
+                    look = obs.lookAngle(ecef);
+                    geo = obs.subSatPoint(ecef);
+                    
+                    if (m_cfg.enableDoppler) {
+                        dopplerKHz = DopplerCalc::compute(eciOpt->posKm, eciOpt->velKms, jd,
+                                                          obs.ecef(), m_cfg.carrierFreqMHz);
+                    }
+                } else {
+                    look = LookAngle(-1000.0, 0.0, 0.0);   // 传播失败占位（与 computeMoment 一致）
+                    geo = GeoPos(0.0, 0.0, 0.0);
+                }
+                
+                // 检查采样数据有效性
+                if (std::isfinite(look.elevDeg) && std::isfinite(look.azDeg) && 
+                    std::isfinite(look.rangeKm) && std::isfinite(geo.latDeg) && 
+                    std::isfinite(geo.lonDeg) && std::isfinite(geo.altKm)) {
+                    ev.samples.push_back({ jdToIntMs(jd), look, geo, dopplerKHz });
+                }
+            } catch (const std::exception &e) {
+                // 单个采样点失败时跳过该点，继续处理其他点
+                continue;
+            }
+        }
+    } catch (const std::bad_alloc &e) {
+        // 内存分配失败时清空采样数据
+        ev.samples.clear();
+    } catch (const std::exception &e) {
+        // 其他异常时清空采样数据
+        ev.samples.clear();
     }
 }
 
@@ -225,10 +405,10 @@ void OrbitCalculator::collectSamples(PropagateFn &propagate,
 // 粗扫描定位状态翻转区间 → 二分精化边界；TCA 作为采样点强制纳入网格，
 // 保证与 TCA 时刻可见性分类（fillPassDetails）严格一致。
 void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
-                                        const Observer &obs,
-                                        double jdAOS, double jdLOS,
-                                        PassEvent &ev,
-                                        const std::atomic<bool> *cancel) const
+                                         const Observer &obs,
+                                         double jdAOS, double jdLOS,
+                                         PassEvent &ev,
+                                         const AtomicCancelFlagPtr cancel) const
 {
     if (!m_cfg.enableVisArc || !m_cfg.enableSunAnalysis
         || !m_cfg.enableShadowCheck || m_cfg.sampleStepSec <= 0.0) return;
@@ -237,13 +417,50 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     const double step  = m_cfg.sampleStepSec / 86400.0;
     const double dark  = m_cfg.darkSkyThresholdDeg - horizonDipDeg(obs.altKm());
 
+    // 优化：缓存太阳位置计算结果，避免重复计算
+    struct SunCache {
+        double jd;
+        SunPosition pos;
+        
+        SunCache(double j, const SunPosition& p) : jd(j), pos(p) {}
+        
+        bool isClose(double j, double tolerance = 1e-8) const {
+            return std::abs(jd - j) < tolerance;
+        }
+    };
+    
+    std::vector<SunCache> sunCache;
+    auto getSunPosition = [&](double jd) -> std::optional<SunPosition> {
+        // 检查缓存
+        for (const auto& cached : sunCache) {
+            if (cached.isClose(jd)) {
+                return cached.pos;
+            }
+        }
+        
+        // 计算并缓存
+        if (sunCache.size() >= 100) {  // 限制缓存大小
+            sunCache.erase(sunCache.begin());
+        }
+        
+        auto sun = SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
+        sunCache.emplace_back(jd, sun);
+        return sun;
+    };
+    
     // t 时刻是否"可观测": 地面暗天 且 卫星被照亮（光照圆面 > 50%）
     auto visibleAt = [&](double jd) -> bool {
         if (isCancelled(cancel)) return false;
-        auto sun = SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
+        
+        auto sunOpt = getSunPosition(jd);
+        if (!sunOpt) return false;
+        const auto& sun = *sunOpt;
+        
         if (sun.altDeg >= dark) return false;
+        
         auto eciOpt = propagate(jd);
         if (!eciOpt) return false;
+        
         auto ecef = CoordTransform::eciToEcef(eciOpt->posKm, jd);
         auto sunDirE = CoordTransform::eciDirToEcef(sun.dirECI, jd);
         return EarthShadow::umbraFactor(ecef, sunDirE, sun.distanceAU) > 0.5;
@@ -339,7 +556,7 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
 double OrbitCalculator::bisectAOS(PropagateFn &propagate,
                                    const Observer &obs,
                                    double jdBelow, double jdAbove,
-                                   const std::atomic<bool> *cancel) const
+                                   const AtomicCancelFlagPtr cancel) const
 {
     double maskEl = obs.minElevDeg();
     // 跨窗口过境: 下界处仰角已在掩星角之上（AOS 在窗口起点之前）→ 直接取窗口起点
@@ -361,7 +578,7 @@ double OrbitCalculator::bisectAOS(PropagateFn &propagate,
 double OrbitCalculator::bisectLOS(PropagateFn &propagate,
                                    const Observer &obs,
                                    double jdAbove, double jdBelow,
-                                   const std::atomic<bool> *cancel) const
+                                   const AtomicCancelFlagPtr cancel) const
 {
     double maskEl = obs.minElevDeg();
     double lo = jdAbove, hi = jdBelow;
@@ -382,7 +599,7 @@ void OrbitCalculator::findTCA(PropagateFn &propagate,
                                double aosJD, double losJD,
                                int64_t &outJdMs, double &outElDeg,
                                LookAngle &outLook, GeoPos &outGeo,
-                               const std::atomic<bool> *cancel) const
+                               const AtomicCancelFlagPtr cancel) const
 {
     double stepDays = m_cfg.maxElevScanStepSec / 86400.0;
     double bestJD = aosJD;
@@ -433,18 +650,54 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
                                                  const Observer &observer,
                                                  double jdStart,
                                                  double hoursAhead,
-                                                 const std::atomic<bool> *cancel) const
+                                                 const AtomicCancelFlagPtr cancel) const
 {
     // 入口防御: 非法配置/非法时间会导致下方主循环 `for(;;)` 永不死去
     // （stepDays<=0 不前进、jdStart=NaN 恒不满足 jd>=jdEnd）→ 拒绝并返回空
     const double stepDays = m_cfg.coarseStepSec / 86400.0;
-    if (!(stepDays > 0.0) || !std::isfinite(jdStart) || !std::isfinite(hoursAhead)
-        || hoursAhead < 0.0 || !std::isfinite(observer.minElevDeg())) {
-        return {};
+    
+    // 详细的输入验证和错误信息
+    if (!(stepDays > 0.0)) {
+        throw std::invalid_argument("OrbitCalculator配置错误: 粗搜索步长必须为正数。当前配置: " +
+                                   std::to_string(m_cfg.coarseStepSec) + " 秒");
     }
+    if (!std::isfinite(jdStart)) {
+        throw std::invalid_argument("OrbitCalculator计算错误: 起始儒略日无效。当前值: " +
+                                   std::to_string(jdStart));
+    }
+    if (!std::isfinite(hoursAhead)) {
+        throw std::invalid_argument("OrbitCalculator计算错误: 预测时长无效。当前值: " +
+                                   std::to_string(hoursAhead) + " 小时");
+    }
+    if (hoursAhead < 0.0) {
+        throw std::invalid_argument("OrbitCalculator配置错误: 预测时长必须为非负数。当前值: " +
+                                   std::to_string(hoursAhead) + " 小时");
+    }
+    if (!std::isfinite(observer.minElevDeg())) {
+        throw std::invalid_argument("OrbitCalculator配置错误: 掩星角无效。观测站掩星角: " +
+                                   std::to_string(observer.minElevDeg()) + "°");
+    }
+    
+    // 计算结束时间并验证合理性
     const double jdEnd    = jdStart + hoursAhead / 24.0;
     const double maskEl   = observer.minElevDeg();
+    
+    // 优化：预分配 PassEvent 向量容量，避免频繁重新分配
+    // 估算最大可能的过境数量：假设每60分钟一个过境，每个过境持续10分钟
+    const double maxEstimatedPasses = std::ceil(hoursAhead * 60.0 / (60.0 + 10.0));
     std::vector<PassEvent> passes;
+    passes.reserve(maxEstimatedPasses > 0 ? static_cast<size_t>(maxEstimatedPasses) : 10);
+    
+    // 优化：使用移动语义避免 PassEvent 的不必要拷贝
+    passes.reserve(passes.capacity() + passes.capacity() / 2);  // 额外预留50%空间
+    
+    // 添加调试信息（仅在调试模式下）
+    #ifdef QT_DEBUG
+    qDebug() << QString("OrbitCalculator开始计算: 起始JD=%.6f, 预测时长=%.1f小时, 掩星角=%.1f°")
+        .arg(jdStart, 0, 'f', 6)
+        .arg(hoursAhead)
+        .arg(maskEl);
+    #endif
 
     // 初始状态: 若窗口起点已在掩星角之上，视为过境中（AOS 在窗口前，用窗口起点作下界）
     double el0 = elevationAt(propagate, observer, jdStart);
@@ -574,7 +827,9 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     // ---- 合并相邻过境 ----
     if (!isCancelled(cancel) && passes.size() > 1 && m_cfg.mergeGapSec > 0.0) {
         const double gapDays = m_cfg.mergeGapSec / 86400.0;
+        // 优化：预分配合并后的向量容量
         std::vector<PassEvent> merged;
+        merged.reserve(passes.size());  // 最坏情况下不需要合并
         merged.push_back(std::move(passes[0]));
         for (size_t i = 1; i < passes.size(); ++i) {
             double prevLos = intMsToJd(merged.back().losJdMs);

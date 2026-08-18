@@ -3,8 +3,11 @@
 // =============================================================================
 #include "Propagator.h"
 #include "perturb-master/include/perturb/perturb.hpp"
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
+#include <stdexcept>
 
 Propagator::Propagator() {}
 Propagator::~Propagator() {}   // unique_ptr 自动释放（此处需完整类型，已在下方 include）
@@ -48,6 +51,14 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
         errorMsg = "TLE 行长度不足 69 字符";
         return false;
     }
+    
+    // 添加详细的长度检查信息
+    if (line1.length() != 69) {
+        errorMsg += " (行1长度: " + std::to_string(line1.length()) + " 字符)";
+    }
+    if (line2.length() != 69) {
+        errorMsg += " (行2长度: " + std::to_string(line2.length()) + " 字符)";
+    }
 
     // perturb::Satellite::from_tle 接受非 const string 引用（底层会修改）
     std::string l1 = line1;
@@ -61,38 +72,101 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
         if (err != perturb::Sgp4Error::NONE) {
             switch (err) {
             case perturb::Sgp4Error::INVALID_TLE:
-                errorMsg = "TLE 格式无效"; break;
+                errorMsg = "TLE 格式无效: TLE 数据不符合规范要求";
+                errorMsg += "\n可能原因: ";
+                errorMsg += "- TLE字段格式错误（如非数字字符、字段越界）";
+                errorMsg += "\n- 轨道根数超出物理范围（如偏心率≥1、倾角>180°）";
+                errorMsg += "\n- 校验和错误导致数据损坏";
+                errorMsg += "\n- TLE版本与SGP4模型不兼容";
+                break;
             case perturb::Sgp4Error::DECAYED:
-                errorMsg = "卫星已衰减"; break;
+                errorMsg = "卫星已衰减: 卫星轨道已衰减至大气层内";
+                errorMsg += "\n可能原因: ";
+                errorMsg += "- 卫星大气阻力过大导致轨道快速衰减";
+                errorMsg += "\n- 使用了过时的TLE数据（历元时间过早）";
+                errorMsg += "\n- B*阻力项参数异常";
+                errorMsg += "\n建议: 使用更新的TLE数据或检查卫星状态";
+                break;
             case perturb::Sgp4Error::MEAN_ELEMENTS:
-                errorMsg = "平根数异常"; break;
+                errorMsg = "平根数异常: 使用平根数而非瞬时根数";
+                errorMsg += "\n可能原因: ";
+                errorMsg += "- TLE使用了平均轨道根数而非瞬时根数";
+                errorMsg += "\n- SGP4模型版本与TLE格式不匹配";
+                errorMsg += "\n建议: 确认TLE格式或尝试使用不同SGP4实现";
+                break;
             default:
-                errorMsg = "SGP4 初始化错误"; break;
+                errorMsg = "SGP4 初始化错误: 未知错误代码 " + std::to_string(static_cast<int>(err));
+                errorMsg += "\n可能原因: ";
+                errorMsg += "- 未知或未处理的SGP4错误类型";
+                errorMsg += "\n- perturb库版本与TLE格式不兼容";
+                errorMsg += "\n- 内存分配或数值计算异常";
+                errorMsg += "\n建议: 更新perturb库或联系技术支持";
+                break;
             }
+            
             return false;   // unique_ptr 自动释放
         }
 
         // 获取历元
         perturb::JulianDate epoch = sat->epoch();
+        if (!std::isfinite(epoch.jd) || !std::isfinite(epoch.jd_frac)) {
+            errorMsg = "历元数据无效: 儒略日数据不正常";
+            return false;
+        }
         m_epochJD = epoch.jd + epoch.jd_frac;
+        if (!std::isfinite(m_epochJD)) {
+            errorMsg = "历元计算错误: 儒略日计算结果异常";
+            return false;
+        }
 
         // NORAD 编号（elsetrec.satnum）与轨道模型类别（由平运动推导周期）
         //   no_unkozai: 未作 Kozai 修正的平运动 (rad/min) ⇒ 周期 = 2π/no_unkozai
         const auto &rec = sat->sat_rec;
-        // atoi 对非法字符静默截断为 0——改为整段严格解析（satnum 为 5 位数字
-        // 字段 + NUL, char[6]）。非法输入上游已被 TleParser 的 BAD_NORAD
-        // 拦截, 此处仅防御性, 失败记 0
+        
+        // 防御性解析 NORAD 编号
         {
             const char *b = rec.satnum, *e = rec.satnum + 5;
             while (b < e && (*b == ' ' || *b == '\t')) ++b;
             while (e > b && (e[-1] == ' ' || e[-1] == '\t')) --e;
             int nid = 0;
             const auto res = std::from_chars(b, e, nid);
-            m_noradID = (res.ec == std::errc() && res.ptr == e) ? nid : 0;
+            if (res.ec == std::errc() && res.ptr == e) {
+                m_noradID = nid;
+                if (m_noradID <= 0) {
+                    errorMsg = "NORAD 编号无效: 编号必须为正整数";
+                    return false;
+                }
+            } else {
+                m_noradID = 0;
+                errorMsg = "NORAD 编号解析失败: 无法从 '" + std::string(rec.satnum) + "' 解析有效编号";
+                return false;
+            }
         }
-        if (m_name.empty()) m_name = rec.satnum;
+        
+        if (m_name.empty()) {
+            m_name = rec.satnum;
+            // 清理名称中的空白字符
+            m_name.erase(std::remove_if(m_name.begin(), m_name.end(), 
+                                      [](char c) { return std::isspace(c); }), m_name.end());
+            if (m_name.empty()) {
+                m_name = "Unknown Satellite";
+            }
+        }
+        
+        // 检查平运动数据有效性
+        if (!std::isfinite(rec.no_unkozai)) {
+            errorMsg = "平运动数据无效: 平运动值不是有限数值";
+            return false;
+        }
+        
         const double periodMin = (rec.no_unkozai > 1e-12)
             ? (2.0 * 3.14159265358979323846) / rec.no_unkozai : 0.0;
+            
+        if (!std::isfinite(periodMin) || periodMin <= 0.0) {
+            errorMsg = "轨道周期计算错误: 计算得到的周期无效";
+            return false;
+        }
+        
         // 分类带: 与 TleParser::classifyModel 同阈值、同基准（no_unkozai 周期）,
         // 避免 225min 边界处两处标签打架:
         //   < 225 min → LEO;  [225, 1400) min → MEO;
@@ -102,11 +176,17 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
         else                            m_modelType = Sgp4Type::GEO_SDP4_DS;
 
         m_satellite = std::move(sat);
+    } catch (const std::invalid_argument &e) {
+        errorMsg = "参数错误: " + std::string(e.what());
+        return false;
+    } catch (const std::out_of_range &e) {
+        errorMsg = "范围错误: " + std::string(e.what());
+        return false;
     } catch (const std::exception &e) {
-        errorMsg = std::string("perturb 异常: ") + e.what();
+        errorMsg = "perturb 标准异常: " + std::string(e.what());
         return false;
     } catch (...) {
-        errorMsg = "perturb 未知异常";
+        errorMsg = "perturb 未知异常: 未知类型的异常被抛出";
         return false;
     }
 

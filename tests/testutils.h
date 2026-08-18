@@ -38,7 +38,51 @@ inline QString testDataDir()
 // 儒略日 → UTC 毫秒（与 OrbitCalculator::jdToIntMs 同语义, 截断取整）
 inline int64_t jdToMs(double jd)
 {
-    return static_cast<int64_t>(jd * 86400000.0);
+    // 检查输入值的有效性
+    if (!std::isfinite(jd)) {
+        return 0;
+    }
+    
+    // 检查极端值，防止溢出
+    // int64_t 的范围大约是 ±9.2e18，86400000.0 * jd 必须在这个范围内
+    const double maxSafeJd = 9.2e18 / 86400000.0;
+    const double minSafeJd = -9.2e18 / 86400000.0;
+    
+    if (jd > maxSafeJd) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if (jd < minSafeJd) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    
+    // 使用更精确的转换算法
+    // 将 jd 分解为整数和小数部分，分别处理以减少精度损失
+    int64_t jdInt = static_cast<int64_t>(std::floor(jd));
+    double jdFrac = jd - jdInt;
+    
+    // 计算整数部分和小数部分的毫秒数
+    int64_t intMs = jdInt * 86400000LL;
+    int64_t fracMs = static_cast<int64_t>(std::round(jdFrac * 86400000.0));
+    
+    // 处理四舍五入导致的进位
+    if (fracMs >= 86400000LL) {
+        intMs += 86400000LL;
+        fracMs -= 86400000LL;
+    } else if (fracMs < 0) {
+        intMs -= 86400000LL;
+        fracMs += 86400000LL;
+    }
+    
+    // 最终结果检查
+    if (intMs > 0 && fracMs < 0) {
+        intMs--;
+        fracMs += 86400000LL;
+    } else if (intMs < 0 && fracMs > 0) {
+        intMs++;
+        fracMs -= 86400000LL;
+    }
+    
+    return intMs + fracMs;
 }
 
 // UTC 年月日时 → 儒略日（Hinnant days_from_civil 算法）

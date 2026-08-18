@@ -12,6 +12,8 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QString>
+#include <QTimer>
+#include <memory>
 
 class QTimer;
 
@@ -54,7 +56,7 @@ private:
     bool m_cancelled = false;   // 取消请求后静默忽略迟到回复
     // 超时看门狗: setTransferTimeout 在部分平台对 DNS 解析/建连挂起不生效,
     // 用单发定时器兜底——到期仍未完成即中止并以超时错误上报
-    QTimer *m_timeoutTimer = nullptr;
+    std::unique_ptr<QTimer> m_timeoutTimer;
 };
 
 #endif // BUSINESS_TLEFETCHER_H

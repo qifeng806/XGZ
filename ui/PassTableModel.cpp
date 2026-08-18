@@ -14,18 +14,31 @@ PassTableModel::PassTableModel(QObject *parent)
 
 void PassTableModel::setPasses(const QVector<const PassEvent *> &passes)
 {
-    // 指针集合未变（时区切换、同参数重算等）: 跳过全量 reset,
-    // 保留视图滚动位置与当前选中（setTimeZoneOffset 已另行发通知）
-    if (m_passes == passes) return;
+    {
+        QMutexLocker locker(&m_dataMutex);
+
+        // 指针集合未变（时区切换、同参数重算等）: 跳过全量 reset,
+        // 保留视图滚动位置与当前选中（setTimeZoneOffset 已另行发通知）
+        if (m_passes == passes) return;
+        m_passes = passes;
+    }
+
+    // 必须在锁外发射 reset 信号: 视图会同步回调 data()/rowCount()
+    // 再抢同一把非递归锁, 持锁 reset 会与 data() 死锁
     beginResetModel();
-    m_passes = passes;
     endResetModel();
 }
 
 void PassTableModel::setTimeZoneOffset(int tzOffsetSec)
 {
+    QMutexLocker locker(&m_dataMutex);
+    
     if (m_tzOffsetSec == tzOffsetSec) return;
     m_tzOffsetSec = tzOffsetSec;
+    
+    // 释放锁再发射信号，避免死锁
+    locker.unlock();
+    
     // 表头与时间列随之变化
     emit headerDataChanged(Qt::Horizontal, ColAos, ColLos);
     if (!m_passes.isEmpty())
@@ -97,6 +110,8 @@ QVariant PassTableModel::headerData(int section, Qt::Orientation orientation,
 
 QVariant PassTableModel::data(const QModelIndex &index, int role) const
 {
+    QMutexLocker locker(&m_dataMutex);
+    
     if (!index.isValid() || index.row() < 0 || index.row() >= m_passes.size())
         return QVariant();
     const PassEvent &p = *m_passes[index.row()];
@@ -180,6 +195,9 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
 
     if (role != Qt::DisplayRole) return QVariant();
 
+    // 释放锁再返回结果，避免长时间持有锁
+    locker.unlock();
+    
     switch (c) {
     case ColIndex:  return QString::number(index.row() + 1);
     case ColName:   return QString::fromStdString(p.satelliteName);

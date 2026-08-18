@@ -89,6 +89,16 @@ std::optional<TleData> TleParser::parse(
         if (errOut) *errOut = err;
         return std::nullopt;
     }
+    
+    // 添加详细的长度错误信息
+    if (l1in.length() < 69) {
+        err.detail = "Line 1 too short: " + std::to_string(l1in.length()) + 
+                    " characters (minimum 69 required). Expected format: 1NNNNNU YYDDD.DDDDDDDD .XXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX-# NNNNN";
+    }
+    if (l2in.length() < 69) {
+        err.detail = "Line 2 too short: " + std::to_string(l2in.length()) + 
+                    " characters (minimum 69 required). Expected format: 2NNNNNU YYDDD.DDDDDDDD .XXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX-# NNNNN";
+    }
 
     // ---- 步骤 2: 行号校验 ----
     if (l1in[0] != '1') {
@@ -103,17 +113,32 @@ std::optional<TleData> TleParser::parse(
         if (errOut) *errOut = err;
         return std::nullopt;
     }
+    
+    // 添加行号错误的详细信息
+    if (l1in[0] != '1') {
+        err.detail = "Line 1 must start with '1', found '" + std::string(1, l1in[0]) + "'. " +
+                    "TLE format requires line numbers at position 1: '1' for first line, '2' for second line.";
+    }
+    if (l2in[0] != '2') {
+        err.detail = "Line 2 must start with '2', found '" + std::string(1, l2in[0]) + "'. " +
+                    "TLE format requires line numbers at position 1: '1' for first line, '2' for second line.";
+    }
 
     // ---- 步骤 3: NORAD 编号（行1 列3-7） ----
     {
         int nid = 0;
-        if (!parseStrict(l1in.substr(2, 5), nid)) {
+        std::string noradStr = l1in.substr(2, 5);
+        if (!parseStrict(noradStr, nid)) {
             err.code = ParseError::BAD_NORAD;
             err.detail = "Invalid NORAD ID";
             if (errOut) *errOut = err;
             return std::nullopt;
         }
         tle.noradID = nid;
+        
+        // 添加NORAD编号的详细信息
+        err.detail = "NORAD ID parsed successfully: " + std::to_string(nid) + 
+                    " from field '" + noradStr + "'. Valid range: 1-999999.";
     }
 
     // 默认名称
@@ -125,10 +150,19 @@ std::optional<TleData> TleParser::parse(
         const std::string epochStr = l1in.substr(18, 14);
         int epochYr2 = 0;
         double epochDayVal = 0.0;
-        if (!parseStrict(epochStr.substr(0, 2), epochYr2)
-            || !parseStrict(epochStr.substr(2), epochDayVal)) {
+        
+        if (!parseStrict(epochStr.substr(0, 2), epochYr2)) {
             err.code = ParseError::BAD_EPOCH;
-            err.detail = "Invalid epoch format";
+            err.detail = "Invalid epoch year format: '" + epochStr.substr(0, 2) + 
+                        "'. Expected 2-digit year (00-99).";
+            if (errOut) *errOut = err;
+            return std::nullopt;
+        }
+        
+        if (!parseStrict(epochStr.substr(2), epochDayVal)) {
+            err.code = ParseError::BAD_EPOCH;
+            err.detail = "Invalid epoch day format: '" + epochStr.substr(2) + 
+                        "'. Expected decimal day-of-year (1.0-366.0).";
             if (errOut) *errOut = err;
             return std::nullopt;
         }
@@ -145,12 +179,22 @@ std::optional<TleData> TleParser::parse(
         const double dayMax = leap ? 367.0 : 366.0;   // 日计数 1..365/366 → < 366/367
         if (epochDayVal < 1.0 || epochDayVal >= dayMax) {
             err.code = ParseError::BAD_EPOCH;
-            err.detail = "Invalid epoch day-of-year";
+            err.detail = "Invalid epoch day-of-year: " + std::to_string(epochDayVal) + 
+                        ". Year " + std::to_string(y) + " is " + std::string(leap ? "leap" : "non-leap") + 
+                        ", valid range: 1.0-" + std::to_string(dayMax - 1.0) + ".";
             if (errOut) *errOut = err;
             return std::nullopt;
         }
 
         tle.epochDay = epochDayVal;
+        
+        // 添加历元解析成功的详细信息
+        std::string fullDate = std::to_string(tle.epochYear) + "-" + 
+                              std::to_string(static_cast<int>(tle.epochDay)) + " " +
+                              std::to_string(tle.epochDay - static_cast<int>(tle.epochDay));
+        err.detail = "Epoch parsed successfully: " + fullDate + 
+                    " (Year: " + std::to_string(tle.epochYear) + 
+                    ", Day: " + std::to_string(tle.epochDay) + ")";
     }
 
     // ---- 步骤 5: B* 阻力项（行1 列54-61） ----
@@ -267,29 +311,47 @@ Sgp4Type TleParser::classifyModel(double meanMotionRevDay)
 // 严格整段消费，指数超界（TLE 规范为 [-9, +9]）或非法字符 → 抛异常
 double TleParser::parseScientific(const std::string &s)
 {
-    // 前6位是尾数（含前导空格或符号），后2位是指数
-    // 格式: "Sm.mmmEE" 其中 S=符号/空格, m=尾数, E=指数符号, E=指数值
-    if (s.length() < 8)
-        throw std::invalid_argument("B* field too short");
+    try {
+        // 前6位是尾数（含前导空格或符号），后2位是指数
+        // 格式: "Sm.mmmEE" 其中 S=符号/空格, m=尾数, E=指数符号, E=指数值
+        if (s.length() < 8)
+            throw std::invalid_argument("B* field too short: input length " + std::to_string(s.length()) + " < 8");
 
-    std::string mantissaStr = s.substr(0, 6);
-    std::string expStr = s.substr(6, 2);
+        std::string mantissaStr = s.substr(0, 6);
+        std::string expStr = s.substr(6, 2);
 
-    // 处理尾数中的空格
-    for (char &c : mantissaStr) {
-        if (c == ' ') c = '0';
+        // 处理尾数中的空格
+        for (char &c : mantissaStr) {
+            if (c == ' ') c = '0';
+        }
+        // 确保开头有符号或数字
+        if (mantissaStr[0] == ' ') mantissaStr[0] = '0';
+
+        double mantissa = 0.0;
+        int exponent = 0;
+        
+        if (!parseStrict(mantissaStr, mantissa)) {
+            throw std::invalid_argument("B* mantissa parsing failed: '" + mantissaStr + "' -> " + std::to_string(mantissa));
+        }
+        
+        if (!parseStrict(expStr, exponent)) {
+            throw std::invalid_argument("B* exponent parsing failed: '" + expStr + "' -> " + std::to_string(exponent));
+        }
+        
+        if (exponent < -9 || exponent > 9) {
+            throw std::invalid_argument("B* exponent " + std::to_string(exponent) + " out of range [-9, +9]");
+        }
+
+        double result = mantissa * 1e-5 * std::pow(10.0, exponent);  // TLE格式: 隐含前导小数点
+        
+        if (!std::isfinite(result)) {
+            throw std::invalid_argument("B* result is not finite: " + std::to_string(result));
+        }
+        
+        return result;
+    } catch (const std::exception &e) {
+        throw std::invalid_argument("B* parsing failed for input '" + s + "': " + e.what());
     }
-    // 确保开头有符号或数字
-    if (mantissaStr[0] == ' ') mantissaStr[0] = '0';
-
-    double mantissa = 0.0;
-    int exponent = 0;
-    if (!parseStrict(mantissaStr, mantissa) || !parseStrict(expStr, exponent))
-        throw std::invalid_argument("bad B* field");
-    if (exponent < -9 || exponent > 9)
-        throw std::invalid_argument("B* exponent out of range");
-
-    return mantissa * 1e-5 * std::pow(10.0, exponent);  // TLE格式: 隐含前导小数点
 }
 
 // 校验和验证（模 10）

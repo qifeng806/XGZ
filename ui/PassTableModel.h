@@ -8,6 +8,8 @@
 // =============================================================================
 #include <QAbstractTableModel>
 #include <QVector>
+#include <QMutex>
+#include <QMutexLocker>
 #include "core/models.h"
 
 class PassTableModel : public QAbstractTableModel {
@@ -38,6 +40,7 @@ public:
 private:
     QVector<const PassEvent *> m_passes;
     int m_tzOffsetSec = 0;   // 0 = UTC
+    mutable QMutex m_dataMutex;  // 保护数据的互斥锁
 
     QString tzLabel() const;
     QString jdMsToStr(int64_t jdMs) const;

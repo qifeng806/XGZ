@@ -23,6 +23,7 @@ SOURCES += \
     core/DopplerCalc.cpp \
     core/Magnitude.cpp \
     core/OrbitCalculator.cpp \
+    core/ErrorHandler.cpp \
     business/PassPredictWorker.cpp \
     business/PassPredictorService.cpp \
     business/TleFetcher.cpp \
@@ -48,6 +49,8 @@ HEADERS += \
     core/DopplerCalc.h \
     core/Magnitude.h \
     core/OrbitCalculator.h \
+    core/AtomicCancelFlag.h \
+    core/ErrorHandler.h \
     business/PassPredictWorker.h \
     business/PassPredictorService.h \
     business/TleFetcher.h \

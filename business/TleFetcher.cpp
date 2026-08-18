@@ -61,7 +61,7 @@ void TleFetcher::cancel()
         m_cancelled = true;
         m_reply->abort();
     }
-    if (m_timeoutTimer) m_timeoutTimer->stop();   // 请求已中止, 看门狗失效
+    m_timeoutTimer.reset();   // 请求已中止, 看门狗失效
     emit finished();
 }
 
@@ -97,10 +97,10 @@ void TleFetcher::startRequest(const QUrl &url, const QString &tag)
     // 启动超时看门狗（单发 30s, 与 setTransferTimeout 同量级）:
     // DNS 解析/建连挂起时 transferTimeout 在部分平台不触发, 看门狗兜底
     if (!m_timeoutTimer) {
-        m_timeoutTimer = new QTimer(this);
+        m_timeoutTimer = std::make_unique<QTimer>(this);
         m_timeoutTimer->setSingleShot(true);
         m_timeoutTimer->setInterval(30000);
-        connect(m_timeoutTimer, &QTimer::timeout, this, [this]() {
+        connect(m_timeoutTimer.get(), &QTimer::timeout, this, [this]() {
             if (!m_reply || m_cancelled) return;   // 已收尾/已在取消路径
             m_cancelled = true;                    // aborted 回复走静默清理分支
             m_reply->abort();
@@ -124,7 +124,7 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
             m_cancelled = false;
             m_reply = nullptr;
             m_pendingTag.clear();
-            if (m_timeoutTimer) m_timeoutTimer->stop();
+            m_timeoutTimer.reset();
         }
         reply->deleteLater();   // 修复: 取消分支此前漏删 reply，反复取消会累积泄漏
         return;
@@ -135,7 +135,7 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
     }
     m_reply = nullptr;
     reply->deleteLater();
-    if (m_timeoutTimer) m_timeoutTimer->stop();   // 当前请求已收尾, 看门狗失效
+    m_timeoutTimer.reset();   // 当前请求已收尾, 看门狗失效
 
     const QString tag = m_pendingTag;
     m_pendingTag.clear();

@@ -48,6 +48,7 @@ int main(int argc, char *argv[])
         { "orbitcalc",      runTstOrbitCalc },
         { "magnitude",      runTstMagnitude },
         { "doppler",        runTstDoppler },
+        { "errorhandler",   runTstErrorHandler },
     };
 
     int failures = 0;

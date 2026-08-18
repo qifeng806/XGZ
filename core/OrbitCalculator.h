@@ -6,6 +6,7 @@
 // =============================================================================
 #include "models.h"
 #include "Observer.h"
+#include "AtomicCancelFlag.h"
 #include <atomic>
 #include <functional>
 #include <optional>
@@ -45,7 +46,7 @@ public:
                                    const Observer &observer,
                                    double jdStart,
                                    double hoursAhead = 24.0,
-                                   const std::atomic<bool> *cancel = nullptr) const;
+                                   const AtomicCancelFlagPtr cancel = nullptr) const;
 
     // 卫星名称（用于填充 PassEvent::satelliteName）
     void setSatelliteName(const std::string &name) { m_satName = name; }
@@ -55,9 +56,19 @@ private:
     mutable std::string m_satName;   // 卫星名称
 
     // 取消标志沿调用链以参数传递（M 参数化）: 引擎保持无状态,
-    // 同一实例可安全并发 predict（原子指针成员方案已移除）
-    static bool isCancelled(const std::atomic<bool> *cancel) {
-        return cancel && cancel->load();
+    // 同一实例可安全并发 predict（使用 shared_ptr 确保生命周期安全）
+    static bool isCancelled(const AtomicCancelFlagPtr cancel) {
+        return cancel && cancel->isCancelled();
+    }
+    
+    // 安全的取消检查，带有内存屏障
+    static bool isCancelledWithMemoryBarrier(const AtomicCancelFlagPtr cancel) {
+        if (!cancel) return false;
+        bool cancelled = cancel->isCancelled();
+        if (cancelled) {
+            std::atomic_thread_fence(std::memory_order_acquire);
+        }
+        return cancelled;
     }
 
     double elevationAt(PropagateFn &propagate,
@@ -65,16 +76,16 @@ private:
 
     double bisectAOS(PropagateFn &propagate, const Observer &obs,
                      double jdBelow, double jdAbove,
-                     const std::atomic<bool> *cancel) const;
+                     const AtomicCancelFlagPtr cancel) const;
     double bisectLOS(PropagateFn &propagate, const Observer &obs,
                      double jdAbove, double jdBelow,
-                     const std::atomic<bool> *cancel) const;
+                     const AtomicCancelFlagPtr cancel) const;
 
     void findTCA(PropagateFn &propagate, const Observer &obs,
                  double aosJD, double losJD,
                  int64_t &outJdMs, double &outElDeg,
                  LookAngle &outLook, GeoPos &outGeo,
-                 const std::atomic<bool> *cancel) const;
+                 const AtomicCancelFlagPtr cancel) const;
 
     void computeMoment(PropagateFn &propagate, const Observer &obs,
                        double jd, LookAngle &look, GeoPos &geo) const;
@@ -83,13 +94,13 @@ private:
     // enableDoppler 时同时填充各采样点多普勒）
     void collectSamples(PropagateFn &propagate, const Observer &obs,
                         double jdAOS, double jdLOS, PassEvent &ev,
-                        const std::atomic<bool> *cancel) const;
+                        const AtomicCancelFlagPtr cancel) const;
 
     // 可见弧段子区间: 在 [AOS, LOS] 内扫描"暗天 + 被照亮"的最大连续区间，
     // 边界做二分精化（填 visAosJdMs/visLosJdMs/hasVisibleArc）
     void collectVisibleArc(PropagateFn &propagate, const Observer &obs,
-                           double jdAOS, double jdLOS, PassEvent &ev,
-                           const std::atomic<bool> *cancel) const;
+                            double jdAOS, double jdLOS, PassEvent &ev,
+                            const AtomicCancelFlagPtr cancel) const;
 
     static int64_t jdToIntMs(double jd);
     static double intMsToJd(int64_t ms);

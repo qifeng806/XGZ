@@ -18,7 +18,13 @@
 #include <QTabWidget>
 #include <QDateTimeEdit>
 #include <QFutureWatcher>
+#include <QMetaObject>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QWaitCondition>
+#include <memory>
 #include "core/models.h"
+#include "core/ErrorHandler.h"
 #include "business/PassPredictorService.h"
 #include "business/TleFetcher.h"
 #include "business/TleBlocks.h"
@@ -56,9 +62,15 @@ private slots:
     void onTableRowSelected(int row, int col);
     void onMetaInfo(QString model, QString epochUtc, double ageDays);
 
+    // 统一错误处理: ErrorHandler 信号接入（错误必然上报, 批量模式只入汇总）
+    void onErrorOccurred(const ErrorInfo &error);
+    void onErrorRecoveryAttempt(const ErrorInfo &error, RecoveryAction action);
+    void onErrorRecoveryResult(const ErrorInfo &error, bool success);
+
 private:
     void setupUI();
     void setupConnections();
+    void disconnectAllConnections();
     void populateTable(const QVector<const PassEvent *> &passes);
     // 从当前 UI 控件填充 Job 的观测站参数与计算配置
     void fillJobFromUi(PassPredictWorker::Job &job) const;
@@ -66,6 +78,13 @@ private:
     void startBatchFromBlocks(const QVector<TleBlock> &blocks, const QString &origin);
     // 按"仅显示可见过境"开关过滤 m_currentPasses → m_filteredPasses 并刷新全部视图
     void applyFilterAndRefresh();
+    // 统一错误处理接线（ctor 末尾调用）
+    void setupErrorHandling();
+    // 网络/严重错误专项处理与恢复动作
+    void handleNetworkError(const ErrorInfo &error);
+    void handleCriticalError(const ErrorInfo &error);
+    void retryNetworkOperation(const ErrorInfo &error);
+    void resetToDefaultConfig();
     // 状态栏标签: 同步文本与悬浮提示（文本过长时完整内容可悬停查看）
     void setStatusText(QLabel *label, const QString &text);
     QVector<PassEvent> m_currentPasses;         // 原始全部过境（唯一所有权）
@@ -78,7 +97,14 @@ private:
     void onExportFinished();
     // 计算/下载在途或导出进行中统一禁用导出入口
     void setExportEnabled(bool on);
-    QFutureWatcher<QString> *m_exportWatcher = nullptr;
+    std::unique_ptr<QFutureWatcher<QString>> m_exportWatcher;
+    
+    // 线程同步机制
+    mutable QMutex m_dataMutex;           // 保护共享数据的互斥锁
+    QWaitCondition m_dataReadyCondition;  // 数据就绪条件变量
+    QAtomicInt m_uiUpdateCounter;        // UI更新计数器，用于防止竞态
+    bool m_isClosing;                     // 窗口关闭标志
+    QAtomicInt m_exportLock;             // 导出锁，防止并发导出
 
     // 输入控件
     QPlainTextEdit  *m_tleInput1;
@@ -128,9 +154,9 @@ private:
     GroundTrackWidget *m_groundTrack;
     DopplerPlotWidget *m_dopplerPlot;
 
-    // 业务层
-    PassPredictorService *m_service;
-    TleFetcher *m_tleFetcher;
+    // 业务层 - 使用智能指针管理生命周期
+    std::unique_ptr<PassPredictorService> m_service;
+    std::unique_ptr<TleFetcher> m_tleFetcher;
 };
 
 #endif // UI_MAINWINDOW_H

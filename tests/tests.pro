@@ -32,6 +32,7 @@ SOURCES += \
     tst_orbitcalc.cpp \
     tst_magnitude.cpp \
     tst_doppler.cpp \
+    tst_errorhandler.cpp \
     ../core/TleParser.cpp \
     ../core/Propagator.cpp \
     ../core/CoordTransform.cpp \
@@ -42,6 +43,7 @@ SOURCES += \
     ../core/DopplerCalc.cpp \
     ../core/Magnitude.cpp \
     ../core/OrbitCalculator.cpp \
+    ../core/ErrorHandler.cpp \
     ../business/TleBlocks.cpp \
     ../perturb-master/src/perturb.cpp \
     ../perturb-master/src/sgp4.cpp \
@@ -49,7 +51,9 @@ SOURCES += \
 
 HEADERS += \
     testutils.h \
-    tst_runners.h
+    tst_runners.h \
+    ../core/ErrorHandler.h \
+    ../core/AtomicCancelFlag.h
 
 # 测试数据（随源码分发）
 DISTFILES += \

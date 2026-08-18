@@ -8,6 +8,10 @@
 #include <QPointer>
 #include <QVector>
 #include <QDateTime>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QAtomicInt>
+#include <atomic>
 #include <memory>
 #include "core/models.h"
 #include "PassPredictWorker.h"
@@ -43,17 +47,19 @@ signals:
 private:
     struct ActiveJob {
         QThread *thread = nullptr;
-        QPointer<PassPredictWorker> worker;   // QPointer: worker 销毁后自动置空，避免悬垂
+        std::shared_ptr<PassPredictWorker> worker;   // 使用 shared_ptr 管理worker生命周期
+        qint64 createTime = 0;                         // 创建时间，用于孤儿线程回收策略
     };
     QVector<ActiveJob> m_activeJobs;
 
     // 批量模式汇总状态（成员变量，避免 lambda 捕获悬垂引用）
     QVector<PassEvent> m_batchPasses;   // 已完成的各卫星过境
-    int  m_batchCompleted = 0;          // 已完成（成功+失败）任务数
+    QMutex m_batchMutex;                // 保护批量状态的互斥锁
+    QAtomicInt m_batchCompleted;        // 已完成（成功+失败）任务数（原子操作）
     int  m_batchTotal     = 0;          // 批量任务总数
-    bool m_batchFinished  = false;      // 本批已收尾（resultReady 发出前已置位）,
+    QAtomicInt m_batchSeq;              // 批次序号: 防旧批次迟到信号污染新批次
+    std::atomic<bool> m_batchFinished;  // 本批已收尾（resultReady 发出前已置位）,
                                         // 迟到的单星 metaInfo 不再转发
-    int  m_batchSeq       = 0;          // 批次序号: 防旧批次迟到信号污染新批次
 
     void finishBatch();                 // 全部完成后排序并发出 resultReady
     bool cleanupJob(ActiveJob &job, int waitTimeoutMs);
@@ -62,7 +68,7 @@ private:
     // 移入 m_orphans 后由后台定时器周期性再试 wait, 退出后 deleteLater。
     // 进程存活期间最终全部回收; 析构时再兜底一次(超时仍不退才解除父子关系)
     QVector<ActiveJob> m_orphans;
-    QTimer *m_reapTimer = nullptr;
+    std::unique_ptr<QTimer> m_reapTimer;
     void startReapTimer();
     void reapOrphans();
 };
