@@ -57,6 +57,10 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
     connect(worker.get(), &PassPredictWorker::resultReady, thread, &QThread::quit);
     // errorOccurred → also quit thread（修复：之前不 quit 导致线程泄漏）
     connect(worker.get(), &PassPredictWorker::errorOccurred, thread, &QThread::quit);
+    // jobSkipped → also quit thread（修复：恢复跳过路径此前无信号触发 quit,
+    // 线程永久驻留 exec() 空转, 2s 后被孤儿回收、10s 后泄漏——单星模式下
+    // 每跳过一次即泄漏一个线程）
+    connect(worker.get(), &PassPredictWorker::jobSkipped, thread, &QThread::quit);
     // 注意: 不得用 finished→deleteLater 删 worker——线程结束时即释放对象,
     // 但 m_activeJobs/转发 lambda 的 shared_ptr 仍引用它, 下次 cleanupAll→
     // cancelAll 会对已释放对象调用 cancel()（悬垂指针 UAF, 析构即崩溃）。
@@ -80,6 +84,13 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
                 if (seq != m_batchSeq) return;
                 emit errorOccurred(QString("卫星 %1 已跳过: %2")
                                        .arg(satelliteId, reason));
+            });
+    // 校验和警告: 非致命继续, 不计数不跳过, 仅提示（状态栏去重后单条）
+    connect(worker.get(), &PassPredictWorker::checksumWarning, this,
+            [this, seq](QString satelliteId) {
+                if (seq != m_batchSeq) return;
+                emit errorOccurred(QString("警告: 卫星 %1 的 TLE 校验和未通过, "
+                                           "计算结果仅供参考").arg(satelliteId));
             });
     connect(worker.get(), &PassPredictWorker::metaInfo, this,
             [this, seq](QString model, QString epochUtc, double ageDays) {
@@ -187,8 +198,20 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                     }
                 });
 
+        // 校验和警告: 非致命继续, 不计数不跳过（completed 由 resultReady
+        // 正常结算）, 仅提示——状态栏去重后批量坏数据只提示一条
+        connect(worker.get(), &PassPredictWorker::checksumWarning, this,
+                [this, seq](QString satelliteId) {
+                    if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
+                    emit errorOccurred(QString("警告: 卫星 %1 的 TLE 校验和未通过, "
+                                               "计算结果仅供参考").arg(satelliteId));
+                });
+
         connect(worker.get(), &PassPredictWorker::resultReady, thread, &QThread::quit);
         connect(worker.get(), &PassPredictWorker::errorOccurred, thread, &QThread::quit);
+        // 同 startJob: 恢复跳过路径必须 quit, 否则切片全部被跳过的 worker
+        // 线程驻留空转（finishBatch 后 cleanupAll join 阻塞 2s, 10s 后泄漏）
+        connect(worker.get(), &PassPredictWorker::jobSkipped, thread, &QThread::quit);
         // 同 startJob: worker 生命周期归 shared_ptr, 不得 finished→deleteLater
         // （否则线程结束时对象被释放, m_activeJobs 引用悬垂 → cancelAll UAF）
         connect(worker.get(), &PassPredictWorker::metaInfo, this,
@@ -376,18 +399,27 @@ void PassPredictorService::reapOrphans()
             aj.worker.reset();
             m_orphans.removeAt(i);
         } else if (age > 10000) {  // 10秒以上的线程强制解除父子关系
-            // 长时间运行的孤儿线程：强制解除父子关系，避免内存泄漏
+            // 超龄孤儿（通常因 jobSkipped 旧缺陷驻留或极端卡死）:
+            // 线程仍在运行, 任何删除都是未定义行为——仅解除父子关系避免
+            // 析构等待, 保留在列表持续复查, 待线程自然结束后由上方
+            // isRunning()==false 分支补 deleteLater 回收（不泄漏对象）
             t->setParent(nullptr);
             aj.worker.reset();  // 清理worker引用
-            // 不从列表中移除，让系统在进程退出时回收
-            m_orphans.removeAt(i);
+            aj.createTime = QDateTime::currentMSecsSinceEpoch();  // 重置计时
+            // 不从列表中移除（复查继续, 线程结束后回收）
         }
         // 仍未退出但时间较短，保留待下一轮
     }
     
     // 如果所有孤儿都已处理，停止定时器
     if (m_orphans.isEmpty() && m_reapTimer) {
-        m_reapTimer->stop();         // 全部回收完毕 → 停表省电
-        m_reapTimer.reset();
+        // 槽内不销毁发送者 QTimer（Qt6 COW 通常安全非保证）:
+        // 延迟到下一轮事件循环收尾
+        QTimer::singleShot(0, this, [this]() {
+            if (m_orphans.isEmpty() && m_reapTimer) {
+                m_reapTimer->stop();   // 全部回收完毕 → 停表省电
+                m_reapTimer.reset();
+            }
+        });
     }
 }

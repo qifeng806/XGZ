@@ -381,29 +381,6 @@ bool ErrorHandler::internalHandleError(const ErrorInfo& error)
     return false;
 }
 
-bool ErrorHandler::attemptRecovery(const ErrorInfo& error, RecoveryAction action)
-{
-    switch (action) {
-    case RecoveryAction::RETRY:
-        return shouldRetry(error);
-
-    case RecoveryAction::SKIP:
-        return shouldSkip(error);
-
-    case RecoveryAction::FALLBACK:
-        return shouldUseFallback(error);
-
-    case RecoveryAction::ABORT:
-        return false;
-
-    case RecoveryAction::MANUAL_INTERVENTION:
-        return needsManualIntervention(error);
-
-    default:
-        return false;
-    }
-}
-
 bool ErrorHandler::shouldRetry(const ErrorInfo& error) const
 {
     // 简单的重试策略：对于网络错误和临时性错误，可以重试
@@ -436,21 +413,6 @@ bool ErrorHandler::shouldSkip(const ErrorInfo& error) const
 
     // 对于某些类型的错误，可以跳过当前任务继续执行
     if (error.type == ErrorType::TLE_PARSE_ERROR) {
-        return true;
-    }
-
-    return false;
-}
-
-bool ErrorHandler::shouldUseFallback(const ErrorInfo& error) const
-{
-    // 对于网络错误，可以使用本地缓存或备用数据源
-    if (error.type == ErrorType::NETWORK_ERROR) {
-        return true;
-    }
-
-    // 对于配置错误，可以使用默认配置
-    if (error.type == ErrorType::CONFIG_ERROR) {
         return true;
     }
 

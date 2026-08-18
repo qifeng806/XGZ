@@ -74,8 +74,12 @@ private:
     void populateTable(const QVector<const PassEvent *> &passes);
     // 从当前 UI 控件填充 Job 的观测站参数与计算配置
     void fillJobFromUi(PassPredictWorker::Job &job) const;
-    // 公共批量启动: 解析校验 TLE 块 → 构建任务 → 启动批量预报
+    // 公共批量启动: 解析校验 TLE 块 → 构建任务 → 启动批量预报。
+    // 解析在 QtConcurrent 线程池执行（startBatchFromBlocks 异步化）,
+    // 完成后经 startBatchParsed 在主线程继续
     void startBatchFromBlocks(const QVector<TleBlock> &blocks, const QString &origin);
+    void startBatchParsed(const QVector<PassPredictWorker::Job> &jobs, int failed,
+                          int lenIssues, int fmtIssues, const QString &origin);
     // 按"仅显示可见过境"开关过滤 m_currentPasses → m_filteredPasses 并刷新全部视图
     void applyFilterAndRefresh();
     // 统一错误处理接线（ctor 末尾调用）
@@ -87,6 +91,8 @@ private:
     void resetToDefaultConfig();
     // 状态栏标签: 同步文本与悬浮提示（文本过长时完整内容可悬停查看）
     void setStatusText(QLabel *label, const QString &text);
+    // 状态栏去重刷新: 连续相同文本只刷一次（错误风暴节流, 供错误/恢复信号共用）
+    void showStatusDedup(const QString &text);
     QVector<PassEvent> m_currentPasses;         // 原始全部过境（唯一所有权）
     QVector<const PassEvent *> m_filteredPasses; // 过滤后（共享指针, 零深拷贝）
 

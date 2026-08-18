@@ -135,10 +135,6 @@ std::optional<TleData> TleParser::parse(
             return std::nullopt;
         }
         tle.noradID = nid;
-        
-        // 添加NORAD编号的详细信息
-        err.detail = "NORAD ID parsed successfully: " + std::to_string(nid) + 
-                    " from field '" + noradStr + "'. Valid range: 1-999999.";
     }
 
     // 默认名称
@@ -187,14 +183,6 @@ std::optional<TleData> TleParser::parse(
         }
 
         tle.epochDay = epochDayVal;
-        
-        // 添加历元解析成功的详细信息
-        std::string fullDate = std::to_string(tle.epochYear) + "-" + 
-                              std::to_string(static_cast<int>(tle.epochDay)) + " " +
-                              std::to_string(tle.epochDay - static_cast<int>(tle.epochDay));
-        err.detail = "Epoch parsed successfully: " + fullDate + 
-                    " (Year: " + std::to_string(tle.epochYear) + 
-                    ", Day: " + std::to_string(tle.epochDay) + ")";
     }
 
     // ---- 步骤 5: B* 阻力项（行1 列54-61） ----
@@ -266,6 +254,16 @@ std::optional<TleData> TleParser::parse(
     if (tle.meanMotionRevDay <= 0.0) {
         err.code = ParseError::BAD_ELEMENTS;
         err.detail = "Mean motion must be positive";
+        if (errOut) *errOut = err;
+        return std::nullopt;
+    }
+    // 角度量 [0,360) 界: 定宽字段下越界需越界拼写（罕见）, 但缺失检查时
+    // 错误会在更下层以 INVALID_TLE 暴露, 归类路径与 BAD_ELEMENTS 不一致
+    if (tle.raanDeg < 0.0 || tle.raanDeg >= 360.0
+        || tle.argPerigeeDeg < 0.0 || tle.argPerigeeDeg >= 360.0
+        || tle.meanAnomalyDeg < 0.0 || tle.meanAnomalyDeg >= 360.0) {
+        err.code = ParseError::BAD_ELEMENTS;
+        err.detail = "RAAN/argPerigee/meanAnomaly out of range [0, 360)";
         if (errOut) *errOut = err;
         return std::nullopt;
     }

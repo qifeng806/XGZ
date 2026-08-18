@@ -418,36 +418,10 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     const double step  = m_cfg.sampleStepSec / 86400.0;
     const double dark  = m_cfg.darkSkyThresholdDeg - horizonDipDeg(obs.altKm());
 
-    // 优化：缓存太阳位置计算结果，避免重复计算
-    struct SunCache {
-        double jd;
-        SunPosition pos;
-        
-        SunCache(double j, const SunPosition& p) : jd(j), pos(p) {}
-        
-        bool isClose(double j, double tolerance = 1e-8) const {
-            return std::abs(jd - j) < tolerance;
-        }
-    };
-    
-    std::vector<SunCache> sunCache;
+    // 太阳位置: 直接计算。等步长网格 + 二分精化下每次查询的 JD 均不同,
+    // 曾用「容差 1e-8 天 + 线性扫描 100 项」的缓存从不命中, 纯开销——删除
     auto getSunPosition = [&](double jd) -> std::optional<SunPosition> {
-        // 检查缓存
-        for (const auto& cached : sunCache) {
-            if (cached.isClose(jd)) {
-                return cached.pos;
-            }
-        }
-        
-        // 计算并缓存
-        if (sunCache.size() >= 100) {  // 限制缓存大小
-            sunCache.erase(sunCache.begin());
-        }
-        
-        auto sun = SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
-        if (!sun) return std::nullopt;   // 计算失败: 不缓存、不伪值, 调用侧按不可见处理
-        sunCache.emplace_back(jd, *sun);
-        return sun;
+        return SunPositionCalc::compute(jd, obs.latDeg(), obs.lonDeg());
     };
     
     // t 时刻是否"可观测": 地面暗天 且 卫星被照亮（光照圆面 > 50%）
@@ -489,6 +463,12 @@ void OrbitCalculator::collectVisibleArc(PropagateFn &propagate,
     // 采样网格: 等步长 + 强制纳入 TCA（保证相邻采样状态不同处边界精化正确，
     // 且 TCA 时刻可见性分类与弧段包含关系严格一致）
     std::vector<double> jds;
+    const double nStep = (jdLOS - jdAOS) / step;
+    if (nStep > 100000.0) {
+        // 与 collectSamples 同款上限（GEO 长过境 + 极小步长下逐点
+        // visibleAt 即 SunPosition+propagate+umbraFactor, 无界耗时）
+        return;
+    }
     jds.push_back(jdAOS);
     for (double jd = jdAOS + step; jd < jdLOS; jd += step) jds.push_back(jd);
     jds.push_back(jdLOS);

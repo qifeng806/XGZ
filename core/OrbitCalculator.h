@@ -55,20 +55,12 @@ private:
     Config m_cfg;
     mutable std::string m_satName;   // 卫星名称
 
-    // 取消标志沿调用链以参数传递（M 参数化）: 引擎保持无状态,
-    // 同一实例可安全并发 predict（使用 shared_ptr 确保生命周期安全）
+    // 并发契约（勘误）: predict 参数化已使引擎计算逻辑无状态, 但 m_satName
+    // 是 setSatelliteName 非原子写 + predict 内读——std::string 并发读写即
+    // 数据竞争（UB）。同一实例仅允许单线程串行使用（业务层每 worker 独立
+    // 实例, 满足契约）; 跨线程共享实例时必须在构造/启动后只读 predict
     static bool isCancelled(const AtomicCancelFlagPtr cancel) {
         return cancel && cancel->isCancelled();
-    }
-    
-    // 安全的取消检查，带有内存屏障
-    static bool isCancelledWithMemoryBarrier(const AtomicCancelFlagPtr cancel) {
-        if (!cancel) return false;
-        bool cancelled = cancel->isCancelled();
-        if (cancelled) {
-            std::atomic_thread_fence(std::memory_order_acquire);
-        }
-        return cancelled;
     }
 
     double elevationAt(PropagateFn &propagate,

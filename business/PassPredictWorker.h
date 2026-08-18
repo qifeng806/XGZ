@@ -50,6 +50,10 @@ signals:
     // 不 emit errorOccurred, 但必须通知调度层——否则单星 UI 永久"计算中"、
     // 批量 completed 计数缺失导致 resultReady 永不发出（悬挂）
     void jobSkipped(QString satelliteId, QString reason);
+    // TLE 校验和未通过但解析成功（非致命继续计算）: 用户须感知坏数据存在,
+    // 否则误用精度受损的根数而不知。走独立信号不计数、不跳过, 由 service
+    // 转发为 errorOccurred（UI 状态栏去重后单条提示）
+    void checksumWarning(QString satelliteId);
 
 private:
     AtomicCancelFlagPtr m_cancelFlag;

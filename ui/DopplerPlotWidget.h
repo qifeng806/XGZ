@@ -7,6 +7,7 @@
 // =============================================================================
 #include <QWidget>
 #include <QVector>
+#include <QPointF>
 #include "core/models.h"
 
 class DopplerPlotWidget : public QWidget {
@@ -25,6 +26,12 @@ protected:
 private:
     QVector<const PassEvent *> m_passes;
     int m_selectedIndex = -1;
+
+    // 数据点集缓存: paintEvent 每帧重建（每条曲线几百点 × 批量数百曲线 =
+    // 每帧数千次分配）; 以「指针集合 + 选中」为版本键, 数据未变时复用
+    QVector<QVector<QPointF>> m_curvePtsCache;
+    QVector<const PassEvent *> m_cacheKeyPasses;
+    int m_cacheKeySelection = -1;
 };
 
 #endif // UI_DOPPLERPLOTWIDGET_H

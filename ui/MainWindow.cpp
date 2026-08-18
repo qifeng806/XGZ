@@ -635,9 +635,17 @@ void MainWindow::applyFilterAndRefresh()
             filtered.append(&p);
     }
     
-    // 保存当前选中行与滚动位置
+    // 保存当前选中卫星身份与滚动位置: 过滤/时区切换后行序收缩,
+    // 按行号恢复会漂移到另一颗卫星（越界钳到第 0 行同样漂移）,
+    // 必须以「卫星 + 过境时刻」身份键找回原选择
     const int prevRow = (m_tableModel->rowCount() > 0)
         ? m_passTable->currentIndex().row() : -1;
+    QString prevKey;
+    if (prevRow >= 0 && prevRow < m_filteredPasses.size()) {
+        const auto *prev = m_filteredPasses[prevRow];
+        prevKey = QString::number(prev->aosJdMs) + "|" +
+                  QString::fromStdString(prev->satelliteName);
+    }
     const int prevScroll = m_passTable->verticalScrollBar()->value();
     
     // 更新过滤后的数据
@@ -659,10 +667,17 @@ void MainWindow::applyFilterAndRefresh()
     setStatusText(m_statusCount, QString("过境: %1 (可见: %2)")
         .arg(m_currentPasses.size()).arg(visCount));
 
-    // 恢复选中: 优先保留用户原选择, 越界/无选中时钳到第 0 行
+    // 恢复选中: 按身份键找回原选择（行序可能已变）, 找不到/无选中时钳到第 0 行
     if (m_tableModel->rowCount() > 0) {
-        const int row = (prevRow >= 0 && prevRow < m_tableModel->rowCount())
-            ? prevRow : 0;
+        int row = 0;
+        if (!prevKey.isEmpty()) {
+            for (int i = 0; i < m_filteredPasses.size(); ++i) {
+                const auto *p = m_filteredPasses[i];
+                const QString key = QString::number(p->aosJdMs) + "|" +
+                                    QString::fromStdString(p->satelliteName);
+                if (key == prevKey) { row = i; break; }
+            }
+        }
         m_passTable->selectRow(row);
     }
     // 恢复滚动位置（模型重置后滚动条归零; 超界值由视图自动钳制）
@@ -679,6 +694,15 @@ void MainWindow::setStatusText(QLabel *label, const QString &text)
     
     label->setText(text);
     label->setToolTip(text);   // 文本超长时悬停查看完整内容
+}
+
+void MainWindow::showStatusDedup(const QString &text)
+{
+    // 连续相同文本只刷一次: 批量失败风暴（千颗同因失败）下错误/恢复信号
+    // 逐条到达, 逐条重绘占满 UI 线程; 首条已表达全部信息, 后续相同条目丢弃
+    if (m_lastErrorStatusText == text) return;
+    m_lastErrorStatusText = text;
+    setStatusText(m_statusModel, text);
 }
 
 // ============================================================================
@@ -824,64 +848,80 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
 {
     // 检查对象是否仍然有效
     if (!this->isVisible()) return;
-    
-    QVector<PassPredictWorker::Job> jobs;
-    int failed = 0;
-    for (const auto &b : blocks) {
-        TleParser::ParseError parseErr;
-        auto tleOpt = TleParser::parse(b.line1.toStdString(), b.line2.toStdString(),
-                                       &parseErr);
-        if (!tleOpt) { ++failed; continue; }
-        PassPredictWorker::Job job;
-        fillJobFromUi(job);
-        job.tleLine0 = b.name;
-        job.tleLine1 = b.line1;
-        job.tleLine2 = b.line2;
-        jobs.append(job);
-    }
 
-    if (jobs.isEmpty()) {
-        QString errorMsg = QString("批量导入失败: 共 %1 颗卫星，全部解析失败\n\n").arg(blocks.size());
-        
-        // 分析失败原因并提供详细建议
-        if (blocks.size() > 0) {
-            errorMsg += "可能的原因:\n";
-            
-            // 检查TLE格式问题
-            bool hasLengthIssues = false;
-            bool hasFormatIssues = false;
-            
-            for (const auto &b : blocks) {
-                if (b.line1.length() < 69 || b.line2.length() < 69) {
-                    hasLengthIssues = true;
-                    break;
-                }
+    // 批量解析在 QtConcurrent 线程池执行（TleParser 为纯函数, 无 UI 访问）:
+    // 千颗级粘贴/下载在 GUI 线程串行解析会冻结界面数百毫秒。
+    // UI 参数先快照为模板 job（后台线程禁止读取 UI 控件）
+    PassPredictWorker::Job templateJob;
+    fillJobFromUi(templateJob);
+
+    struct ParseResult {
+        QVector<PassPredictWorker::Job> jobs;
+        int failed = 0;
+        int lenIssues = 0;   // TLE 行长度不足计数（错误诊断用）
+        int fmtIssues = 0;   // 行号前缀错误计数（错误诊断用）
+    };
+
+    // watcher 父子 this: 窗口关闭时随对象树销毁, 解析任务纯函数无 this
+    // 捕获, 完成后结果直接丢弃（回调随 watcher 一并销毁）
+    auto *watcher = new QFutureWatcher<ParseResult>(this);
+    connect(watcher, &QFutureWatcher<ParseResult>::finished, this,
+            [this, watcher, origin]() {
+                const ParseResult r = watcher->result();
+                watcher->deleteLater();
+                startBatchParsed(r.jobs, r.failed, r.lenIssues, r.fmtIssues, origin);
+            });
+    watcher->setFuture(QtConcurrent::run([templateJob, blocks]() -> ParseResult {
+        ParseResult r;
+        for (const auto &b : blocks) {
+            if (b.line1.length() < 69 || b.line2.length() < 69) {
+                ++r.failed;
+                ++r.lenIssues;
+                continue;
             }
-            
-            if (hasLengthIssues) {
-                errorMsg += "• TLE行长度不足（每行至少需要69字符）\n";
+            if (b.line1[0] != '1' || b.line2[0] != '2') {
+                ++r.failed;
+                ++r.fmtIssues;
+                continue;
             }
-            
-            // 检查常见的格式问题
-            for (const auto &b : blocks) {
-                if (b.line1.length() >= 69 && b.line2.length() >= 69) {
-                    if (b.line1[0] != '1' || b.line2[0] != '2') {
-                        hasFormatIssues = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (hasFormatIssues) {
-                errorMsg += "• TLE行号错误（行1应以'1'开头，行2应以'2'开头）\n";
-            }
-            
-            errorMsg += "\n建议解决方案:\n";
-            errorMsg += "1. 检查TLE数据格式是否符合NORAD标准\n";
-            errorMsg += "2. 确保每颗卫星包含完整的两行根数数据\n";
-            errorMsg += "3. 尝试从Celestrak或其他可靠来源重新下载TLE\n";
-            errorMsg += "4. 使用单颗卫星导入测试具体的错误原因\n";
+            TleParser::ParseError parseErr;
+            auto tleOpt = TleParser::parse(b.line1.toStdString(), b.line2.toStdString(),
+                                           &parseErr);
+            if (!tleOpt) { ++r.failed; continue; }
+            PassPredictWorker::Job job = templateJob;
+            job.tleLine0 = b.name;
+            job.tleLine1 = b.line1;
+            job.tleLine2 = b.line2;
+            r.jobs.append(job);
         }
+        return r;
+    }));
+}
+
+void MainWindow::startBatchParsed(const QVector<PassPredictWorker::Job> &jobs,
+                                  int failed, int lenIssues, int fmtIssues,
+                                  const QString &origin)
+{
+    if (jobs.isEmpty()) {
+        QString errorMsg = QString("批量导入失败: 共 %1 颗卫星，全部解析失败\n\n")
+            .arg(failed);
+        
+        // 分析失败原因并提供详细建议（计数由后台解析任务统计）
+        errorMsg += "可能的原因:\n";
+        
+        if (lenIssues > 0) {
+            errorMsg += "• TLE行长度不足（每行至少需要69字符）\n";
+        }
+        
+        if (fmtIssues > 0) {
+            errorMsg += "• TLE行号错误（行1应以'1'开头，行2应以'2'开头）\n";
+        }
+        
+        errorMsg += "\n建议解决方案:\n";
+        errorMsg += "1. 检查TLE数据格式是否符合NORAD标准\n";
+        errorMsg += "2. 确保每颗卫星包含完整的两行根数数据\n";
+        errorMsg += "3. 尝试从Celestrak或其他可靠来源重新下载TLE\n";
+        errorMsg += "4. 使用单颗卫星导入测试具体的错误原因\n";
         
         QMessageBox::critical(this, origin, errorMsg);
         return;
@@ -949,9 +989,6 @@ void MainWindow::onTleError(QString message)
 // 从当前 UI 控件填充观测站参数与计算配置
 void MainWindow::fillJobFromUi(PassPredictWorker::Job &job) const
 {
-    // 检查对象是否仍然有效
-    if (!qobject_cast<const MainWindow*>(this)) return;
-    
     job.observerLatDeg = m_latSpin->value();
     job.observerLonDeg = m_lonSpin->value();
     job.observerAltKm  = m_altSpin->value();
@@ -1195,13 +1232,16 @@ void MainWindow::onError(QString msg)
         m_batchErrors << msg;
         // 状态栏节流: 每 100 项刷一次进度, 防千颗级失败风暴逐条重绘
         // （实时总量由 batchProgress 进度条呈现, 最终失败数由汇总对话框给出）
-        if (m_batchErrors.size() % 100 == 0) {
-            setStatusText(m_statusModel,
-                          QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
-        }
+        const bool throttleTick = (m_batchErrors.size() % 100 == 0);
         
         // 减少UI更新计数器
         m_uiUpdateCounter.fetchAndAddRelaxed(-1);
+        // 解锁后再碰 UI（项目约定: 锁内不做 setText 等界面操作）
+        dataLocker.unlock();
+        if (throttleTick) {
+            setStatusText(m_statusModel,
+                          QString("模型: 批量错误 %1 项").arg(m_batchErrors.size()));
+        }
         return;
     }
     
@@ -1524,22 +1564,18 @@ void MainWindow::onErrorOccurred(const ErrorInfo& error)
 {
     // 状态栏文本去重（连续相同消息只刷一次）: 批量失败风暴（千颗同因失败）
     // 下错误信号逐条到达, 逐条重绘会占满 UI 线程; 首条已表达全部信息
-    auto showStatus = [this](const QString &text) {
-        if (m_lastErrorStatusText == text) return;
-        m_lastErrorStatusText = text;
-        setStatusText(m_statusModel, text);
-    };
+    // （实现见 showStatusDedup）
 
     // 根据错误严重程度决定如何处理
     switch (error.severity) {
     case ErrorSeverity::INFO:
         // 信息性错误，只在状态栏显示
-        showStatus(QString("信息: %1").arg(error.message));
+        showStatusDedup(QString("信息: %1").arg(error.message));
         break;
         
     case ErrorSeverity::WARNING:
         // 警告错误，显示在状态栏并可能影响UI
-        showStatus(QString("警告: %1").arg(error.message));
+        showStatusDedup(QString("警告: %1").arg(error.message));
         
         // 如果是TLE解析警告，可以继续处理
         if (error.type == ErrorType::TLE_PARSE_ERROR) {
@@ -1550,7 +1586,7 @@ void MainWindow::onErrorOccurred(const ErrorInfo& error)
     case ErrorSeverity::ERROR:
         // 错误，状态栏显示（阻塞对话框由 worker→service→onError 路径统一处理:
         // 单星弹窗/批量汇总, 避免此处无条件弹窗导致重复弹窗或批量刷屏）
-        showStatus(QString("错误: %1").arg(error.message));
+        showStatusDedup(QString("错误: %1").arg(error.message));
         
         // 如果是网络错误，可能需要重试
         if (error.type == ErrorType::NETWORK_ERROR) {
@@ -1560,11 +1596,15 @@ void MainWindow::onErrorOccurred(const ErrorInfo& error)
         
     case ErrorSeverity::CRITICAL:
         // 严重错误，显示严重错误对话框
-        showStatus(QString("严重错误: %1").arg(error.message));
+        showStatusDedup(QString("严重错误: %1").arg(error.message));
         
-        QMessageBox::critical(this, "严重错误", 
-                            error.message + "\n\n详细信息:\n" + error.detailedContext + 
-                            "\n\n建议操作:\n" + error.suggestedAction);
+        // 批量模式下不弹模态（千颗失败风暴 = 千次弹窗刷屏, 状态栏已提示;
+        // 当前 CRITICAL 制造路径在生产代码中无调用者, 门控为未来复用防御）
+        if (!m_batchMode) {
+            QMessageBox::critical(this, "严重错误", 
+                                error.message + "\n\n详细信息:\n" + error.detailedContext + 
+                                "\n\n建议操作:\n" + error.suggestedAction);
+        }
         
         // 对于严重错误，可能需要禁用某些功能
         handleCriticalError(error);
@@ -1594,7 +1634,7 @@ void MainWindow::onErrorRecoveryAttempt(const ErrorInfo& error, RecoveryAction a
         break;
     }
     
-    setStatusText(m_statusModel, QString("恢复尝试: %1 (%2)").arg(error.message).arg(actionText));
+    showStatusDedup(QString("恢复尝试: %1 (%2)").arg(error.message).arg(actionText));
     
     #ifdef QT_DEBUG
     qDebug() << "Recovery attempt for error:" << error.message << "Action:" << actionText;
@@ -1604,7 +1644,7 @@ void MainWindow::onErrorRecoveryAttempt(const ErrorInfo& error, RecoveryAction a
 void MainWindow::onErrorRecoveryResult(const ErrorInfo& error, bool success)
 {
     if (success) {
-        setStatusText(m_statusModel, QString("恢复成功: %1").arg(error.message));
+        showStatusDedup(QString("恢复成功: %1").arg(error.message));
         
         // 如果是TLE解析错误恢复成功，可能需要更新UI
         if (error.type == ErrorType::TLE_PARSE_ERROR) {
@@ -1614,7 +1654,7 @@ void MainWindow::onErrorRecoveryResult(const ErrorInfo& error, bool success)
         // 恢复失败: 仅状态栏提示。错误详情已由 onErrorOccurred 状态栏/
         // 弹窗路径呈现（单星弹窗、批量汇总、CRITICAL 弹窗）——此处若弹
         // 模态对话框, 批量千颗失败会逐条刷屏（用户需点击上千次）
-        setStatusText(m_statusModel, QString("恢复失败: %1").arg(error.message));
+        showStatusDedup(QString("恢复失败: %1").arg(error.message));
     }
 }
 
@@ -1665,8 +1705,9 @@ void MainWindow::handleCriticalError(const ErrorInfo& error)
 void MainWindow::retryNetworkOperation(const ErrorInfo &info)
 {
     Q_UNUSED(info);   // Release 下仅 QT_DEBUG 分支使用
-    // 重试网络操作的逻辑
-    // 这里可以根据具体的网络操作类型来实现重试逻辑
+    // 重试网络操作: 重新触发当前 TLE 组的在线下载
+    //（NETWORK_ERROR 当前生产无触发路径——createNetworkError 无调用者,
+    // 本函数为未来网络链路复用预留, 重试语义与 onOnlineUpdate 一致）
     
     #ifdef QT_DEBUG
     qDebug() << "Retrying network operation for error:" << info.message;
@@ -1675,8 +1716,7 @@ void MainWindow::retryNetworkOperation(const ErrorInfo &info)
     // 显示重试进度
     setStatusText(m_statusModel, "正在重试网络操作...");
     
-    // 这里可以添加具体的重试逻辑，比如重新下载TLE数据
-    // 例如：m_service->fetchTleData();
+    onOnlineUpdate();
 }
 
 void MainWindow::resetToDefaultConfig()

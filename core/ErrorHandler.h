@@ -178,12 +178,6 @@ private:
 
     // 内部处理错误
     bool internalHandleError(const ErrorInfo& error);
-    
-    // 执行恢复操作
-    bool attemptRecovery(const ErrorInfo& error, RecoveryAction action);
-    
-    // 检查是否应该使用备用方案
-    bool shouldUseFallback(const ErrorInfo& error) const;
 };
 
 #endif // ERROR_HANDLER_H

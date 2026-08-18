@@ -262,9 +262,11 @@ std::array<double, 3> CoordTransform::eciToEcef(
 
         return {x, y, z};
     } catch (const std::exception &e) {
-        // 记录错误信息（在实际应用中可以使用日志系统）
-        // std::cerr << "eciToEcef 转换失败: " << e.what() << std::endl;
-        return {0.0, 0.0, 0.0};  // 返回零值作为错误处理
+        // NaN 哨兵: 与真实地心坐标 {0,0,0} 可区分——{0,0,0} 是有限值,
+        // 会经 Observer::lookAngle 产出约 -90° 有限仰角, 绕过 ELEV_FAILURE_
+        // SENTINEL 的"失败 vs 真实地平线以下"区分; NaN 沿调用链被 isfinite
+        // 检查/NaN 比较自然拦截, 一律按失败处理
+        return {NAN, NAN, NAN};
     }
 }
 
@@ -274,19 +276,19 @@ std::array<double, 3> CoordTransform::eciToEcef(
 std::array<double, 3> CoordTransform::eciDirToEcef(
     const std::array<double, 3> &dirTeme, double jdUt1)
 {
-    // 输入验证
+    // 输入验证（失败一律 NaN 哨兵: 与真实方向矢量可区分, NaN 比较自然拦截）
     if (!std::isfinite(jdUt1)) {
-        return {0.0, 0.0, 0.0};  // 无效输入返回零值
+        return {NAN, NAN, NAN};  // 无效输入返回 NaN
     }
     
     // 检查方向矢量
     if (!std::isfinite(dirTeme[0]) || !std::isfinite(dirTeme[1]) || !std::isfinite(dirTeme[2])) {
-        return {0.0, 0.0, 0.0};  // 无效方向返回零值
+        return {NAN, NAN, NAN};  // 无效方向返回 NaN
     }
 
     double theta = gmstRad(jdUt1);
     if (!std::isfinite(theta)) {
-        return {0.0, 0.0, 0.0};  // 无效角度返回零值
+        return {NAN, NAN, NAN};  // 无效角度返回 NaN
     }
     
     double c = std::cos(theta);
@@ -294,7 +296,7 @@ std::array<double, 3> CoordTransform::eciDirToEcef(
     
     // 检查三角函数值的有效性
     if (!std::isfinite(c) || !std::isfinite(s)) {
-        return {0.0, 0.0, 0.0};  // 无效三角函数返回零值
+        return {NAN, NAN, NAN};  // 无效三角函数返回 NaN
     }
 
     double x = dirTeme[0] * c + dirTeme[1] * s;
@@ -303,7 +305,7 @@ std::array<double, 3> CoordTransform::eciDirToEcef(
 
     // 检查结果的有效性
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-        return {0.0, 0.0, 0.0};  // 无效结果返回零值
+        return {NAN, NAN, NAN};  // 无效结果返回 NaN
     }
 
     return {x, y, z};
@@ -763,6 +765,9 @@ double CoordTransform::applyRefraction(double elGeomDeg)
 
 // ============================================================================
 // 缓存管理函数
+// 注意: gmstCache 为 thread_local（每线程独立缓存）——clearCache()/getCacheSize()
+// 只作用/反映当前调用线程; worker 池各线程缓存不受主线程清理影响, 属于
+// 设计内行为（缓存隔离避免并发 UB 的代价）
 // ============================================================================
 void CoordTransform::clearCache() {
     clearGmstCache();

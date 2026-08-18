@@ -116,6 +116,9 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
         return QVariant();
     const PassEvent &p = *m_passes[index.row()];
     const int c = index.column();
+    // 列号防御: 与行号同级校验（视图协议保证只请求合法列, 防御越界数组访问）
+    if (c < 0 || c >= ColCount)
+        return QVariant();
 
     // 列对齐: 数值右对齐、状态居中、文本左对齐
     if (role == Qt::TextAlignmentRole) {

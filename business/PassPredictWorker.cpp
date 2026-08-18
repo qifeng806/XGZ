@@ -177,6 +177,13 @@ void PassPredictWorker::runOneJob(const Job &job)
     }
 
     const auto &tle = *tleOpt;
+
+    // 校验和未通过: 解析成功（非致命继续计算）, 但必须让用户感知坏数据
+    //（否则 WARNING 告警路径 CHECKSUM_FAILED 从未执行——静默无感）。
+    // 独立信号: 不计数、不跳过, 由 service 转发为 errorOccurred
+    if (!tle.checksumValid) {
+        emit checksumWarning(QString::fromStdString(tle.name));
+    }
     
     // 记录解析成功信息
     #ifdef QT_DEBUG
