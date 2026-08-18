@@ -151,14 +151,22 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
     // 先于过境轨迹绘制，保证轨迹线不被大陆遮挡
     painter.setPen(QPen(QColor(120, 130, 148), 1));
     painter.setBrush(QColor(58, 68, 86));
-    for (const auto &poly : m_landPolygons) {
-        if (poly.size() < 3) continue;
-        QPolygonF screen;
-        screen.reserve(poly.size());
-        for (const QPointF &pt : poly)
-            screen.append(geoToScreen(pt.x(), pt.y(), x0, y0, sx, sy));
-        painter.drawPolygon(screen);
+    if (m_projectedSize != QSize(w, h)) {
+        // 尺寸变化（首帧/resize）: 重建投影缓存
+        m_projectedLand.clear();
+        m_projectedLand.reserve(m_landPolygons.size());
+        for (const auto &poly : m_landPolygons) {
+            if (poly.size() < 3) continue;
+            QPolygonF screen;
+            screen.reserve(poly.size());
+            for (const QPointF &pt : poly)
+                screen.append(geoToScreen(pt.x(), pt.y(), x0, y0, sx, sy));
+            m_projectedLand.append(screen);
+        }
+        m_projectedSize = QSize(w, h);
     }
+    for (const auto &screen : m_projectedLand)
+        painter.drawPolygon(screen);
 
     // 地面站标注（无数据时不画——空任务时坐标保持默认 (0,0) 会在大西洋
     // 画一个虚假站点, 容易被误认为真实观测站）

@@ -56,7 +56,10 @@ QPointF PolarPlotWidget::polarToScreen(double azDeg, double elDeg,
                                         double cx, double cy, double radius) const
 {
     // 将仰角映射为距圆心的距离：elDeg=90 → r=0, elDeg=0 → r=radius
-    double r = radius * (1.0 - elDeg / 90.0);
+    // 钳制上限: 数据异常 elDeg>90 会得到负半径, 点被镜像到圆心另一侧
+    // （伪影弧线穿过图心）; 负仰角（折射修正后略低于地平线）保留——
+    // 画在外圈之外属预期行为
+    double r = radius * (1.0 - std::min(elDeg, 90.0) / 90.0);
     // 方位角: 北=0°，但 Qt 坐标系 Y 轴向下，所以需要转换
     // 地图: 北=上(270° in math), 东=右(0° in math)
     // 转换为标准数学坐标系: 0°=右, 90°=上

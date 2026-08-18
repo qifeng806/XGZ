@@ -675,6 +675,12 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         throw std::invalid_argument("OrbitCalculator配置错误: 预测时长必须为非负数。当前值: " +
                                    std::to_string(hoursAhead) + " 小时");
     }
+    // 上限防御: 超长窗口会让 maxSteps 溢出/预分配数百 GB（bad_alloc 未捕获
+    // 即进程崩溃）。UI 限 24h, 一年(8760h)上限远高于真实用途
+    if (hoursAhead > 8760.0) {
+        throw std::invalid_argument("OrbitCalculator配置错误: 预测时长超过一年(8760h)上限。当前值: " +
+                                   std::to_string(hoursAhead) + " 小时");
+    }
     if (!std::isfinite(observer.minElevDeg())) {
         throw std::invalid_argument("OrbitCalculator配置错误: 掩星角无效。观测站掩星角: " +
                                    std::to_string(observer.minElevDeg()) + "°");

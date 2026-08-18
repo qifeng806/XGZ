@@ -70,11 +70,18 @@ void TleFetcher::startRequest(const QUrl &url, const QString &tag)
     // 新请求开始即解除历史取消状态（防残留标志吞掉本次正常结果）
     m_cancelled = false;
     if (m_reply) {
-        // 立即中止旧传输: 仅 deleteLater 时旧请求在 DeferredDelete 被处理前
-        // 仍会继续占带宽下载（千星组 ~1-2MB 级）
-        m_reply->abort();
-        m_reply->deleteLater();   // 并发保护: 丢弃旧请求
+        // Qt6 的 QNetworkReply::abort() 会同步发射 finished() 重入
+        // onReplyFinished（QCoro/Qt bug 报告已证实, 非异步）——必须先把
+        // m_reply 摘为 nullptr 再 abort, 否则 onReplyFinished 内 m_reply=nullptr
+        // 返回后此处继续解引用即空指针崩溃; 同时置取消标志让旧请求的收尾
+        // 走静默清理分支（否则 aborted 回复会走正常错误路径弹虚假"网络错误"）
+        QNetworkReply *old = m_reply;
+        m_reply = nullptr;
+        m_cancelled = true;
+        old->abort();
+        old->deleteLater();
     }
+    m_cancelled = false;   // 旧请求已中止/标记丢弃, 新请求恢复正常语义
 
     QNetworkRequest req(url);
     req.setTransferTimeout(30000);
@@ -102,6 +109,7 @@ void TleFetcher::startRequest(const QUrl &url, const QString &tag)
         m_timeoutTimer->setInterval(30000);
         connect(m_timeoutTimer.get(), &QTimer::timeout, this, [this]() {
             if (!m_reply || m_cancelled) return;   // 已收尾/已在取消路径
+            if (m_reply->isFinished()) return;     // 数据已到, finished 已排队, 看门狗退场
             m_cancelled = true;                    // aborted 回复走静默清理分支
             m_reply->abort();
             emit fetchError("网络请求超时（30 秒未完成，请检查网络后重试）");

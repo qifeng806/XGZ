@@ -1611,12 +1611,10 @@ void MainWindow::onErrorRecoveryResult(const ErrorInfo& error, bool success)
             // 可以在这里更新TLE列表或重新计算
         }
     } else {
+        // 恢复失败: 仅状态栏提示。错误详情已由 onErrorOccurred 状态栏/
+        // 弹窗路径呈现（单星弹窗、批量汇总、CRITICAL 弹窗）——此处若弹
+        // 模态对话框, 批量千颗失败会逐条刷屏（用户需点击上千次）
         setStatusText(m_statusModel, QString("恢复失败: %1").arg(error.message));
-        
-        // 恢复失败，显示详细信息
-        QMessageBox::information(this, "恢复失败", 
-                               error.message + "\n\n详细信息:\n" + error.detailedContext + 
-                               "\n\n建议操作:\n" + error.suggestedAction);
     }
 }
 
@@ -1664,13 +1662,14 @@ void MainWindow::handleCriticalError(const ErrorInfo& error)
     }
 }
 
-void MainWindow::retryNetworkOperation(const ErrorInfo &)
+void MainWindow::retryNetworkOperation(const ErrorInfo &info)
 {
+    Q_UNUSED(info);   // Release 下仅 QT_DEBUG 分支使用
     // 重试网络操作的逻辑
     // 这里可以根据具体的网络操作类型来实现重试逻辑
     
     #ifdef QT_DEBUG
-    qDebug() << "Retrying network operation for error:" << error.message;
+    qDebug() << "Retrying network operation for error:" << info.message;
     #endif
     
     // 显示重试进度

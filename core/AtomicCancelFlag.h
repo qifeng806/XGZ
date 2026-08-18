@@ -74,7 +74,11 @@ public:
      * @param other 另一个取消标志
      */
     void swap(AtomicCancelFlag& other) noexcept {
-        m_flag.exchange(other.m_flag, std::memory_order_acq_rel);
+        // 双向对换: 单次 exchange 只把 other 拷入 this 并丢弃旧值,
+        // 必须再写回 other 才是交换语义
+        bool mine = m_flag.load(std::memory_order_relaxed);
+        bool theirs = other.m_flag.exchange(mine, std::memory_order_acq_rel);
+        m_flag.store(theirs, std::memory_order_release);
         std::swap(m_cancelCallback, other.m_cancelCallback);
     }
     

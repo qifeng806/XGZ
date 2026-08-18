@@ -33,8 +33,11 @@ namespace {
         }
     };
     
-    // GMST 缓存
-    static std::vector<GmstCacheEntry> gmstCache;
+    // GMST 缓存: thread_local 隔离每线程缓存。
+    // 预报 worker 池（最多 16 线程）并发调用 gmstRad（每传播步一次），
+    // 共享 std::vector 的 push_back/erase/遍历并发即未定义行为——
+    // Nutation.cpp 同款问题已用 thread_local 修复，此处一并对齐
+    static thread_local std::vector<GmstCacheEntry> gmstCache;
     
     // 清除 GMST 缓存
     void clearGmstCache() {
