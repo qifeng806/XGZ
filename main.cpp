@@ -50,9 +50,14 @@ int main(int argc, char *argv[])
 
     // 深色主题风格
     app.setStyleSheet(R"(
+        /* 兜底: 中央 QWidget 容器/嵌套容器默认继承系统浅灰白——
+           仅设 QMainWindow 背景时大面积区域仍是浅色; 具体控件规则
+           （更具体的选择器）在其后覆盖本规则 */
+        QWidget { background-color: #2b2b2b; }
         QMainWindow { background-color: #2b2b2b; }
         QGroupBox {
             color: #e0e0e0;
+            background-color: #2b2b2b;
             border: 1px solid #555;
             border-radius: 4px;
             margin-top: 8px;
