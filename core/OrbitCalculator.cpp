@@ -211,14 +211,8 @@ int64_t OrbitCalculator::jdToIntMs(double jd) {
         fracMs += 86400000LL;
     }
     
-    // 最终结果检查
-    if (intMs > 0 && fracMs < 0) {
-        intMs--;
-        fracMs += 86400000LL;
-    } else if (intMs < 0 && fracMs > 0) {
-        intMs++;
-        fracMs -= 86400000LL;
-    }
+    // 注: 此处 fracMs 已归一化到 [0, 86400000), 无需再做符号修正
+    //（原「最终结果检查」分支是数值恒等变换, 恒不改变结果, 已删除）
     
     return intMs + fracMs;
 }
@@ -665,6 +659,16 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
         throw std::invalid_argument("OrbitCalculator配置错误: 掩星角无效。观测站掩星角: " +
                                    std::to_string(observer.minElevDeg()) + "°");
     }
+    // 峰值扫描步长校验: findTCA 以此为 for 步进, ≤0 时条件恒真硬挂死 worker
+    //（区别于 coarseStepSec 的"慢", 这是死循环）; 迭代次数下限 1 同理防御
+    if (!(m_cfg.maxElevScanStepSec > 0.0) || !std::isfinite(m_cfg.maxElevScanStepSec)) {
+        throw std::invalid_argument("OrbitCalculator配置错误: 峰值扫描步长必须为正数。当前值: " +
+                                    std::to_string(m_cfg.maxElevScanStepSec) + " 秒");
+    }
+    if (m_cfg.bisectionIters < 1) {
+        throw std::invalid_argument("OrbitCalculator配置错误: 二分迭代次数必须≥1。当前值: " +
+                                    std::to_string(m_cfg.bisectionIters));
+    }
     
     // 计算结束时间并验证合理性
     const double jdEnd    = jdStart + hoursAhead / 24.0;
@@ -730,6 +734,7 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
     const int64_t maxSteps = static_cast<int64_t>(std::ceil(
         hoursAhead * 86400.0 / std::max(m_cfg.coarseStepSec, 1e-6))) + 2;
     int64_t stepsDone = 0;
+    double lastGridJd = jdStart;   // 最后一个粗搜网格点（EXTEND 续扫起点）
     for (double jd = jdStart;; jd += stepDays) {
         if (isCancelled(cancel) || ++stepsDone > maxSteps) return passes;   // 协作式取消
 
@@ -781,15 +786,18 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             }
             prevEl = el;
         }
-        if (jd >= jdEnd) break;
+        if (jd >= jdEnd) { lastGridJd = jd; break; }
     }
 
     // ---- 跨 24h 边界处理 ----
     if (inPass) {
-        // 延长搜索最多 EXTEND_MIN 分钟
+        // 从最后一个粗搜网格点续扫而非窗口终点: prevEl 属于该网格点——
+        // 若从 jdEnd 重扫, 首个比较是「晚时刻的 prevEl vs 早时刻的 el」,
+        // 真实 LOS 落在 [jdEnd, lastGridJd] 网格缝内时二分括号不含翻转点,
+        // LOS 收敛偏早最多一个粗搜步长
         double jdExtend = jdEnd + EXTEND_MIN / 1440.0;
         double jdLos = -1.0;
-        for (double jd = jdEnd; jd < jdExtend; jd += stepDays) {
+        for (double jd = lastGridJd; jd < jdExtend; jd += stepDays) {
             if (isCancelled(cancel)) return passes;
 
             double el = elevationAt(propagate, observer, jd);
@@ -888,18 +896,23 @@ std::vector<PassEvent> OrbitCalculator::predict(PropagateFn propagate,
             if (azDiff < -180.0) azDiff += 360.0;
             ev.passType = (azDiff > 0.0) ? 0 : 1;
             // 可见性同以新 TCA 时刻的光照/太阳高度重推——TCA 可能已换为
-            // 后段, 旧分类（前段 TCA）会与展示字段自相矛盾
-            double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
-            bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra)
-                          && ev.tcaIllum > 0.5;
-            const double dark = m_cfg.darkSkyThresholdDeg
-                                - horizonDipDeg(observer.altKm());
-            if (bestSunAlt < dark && satLit)
-                ev.visibility = PassVisibility::Visible;
-            else if (bestSunAlt < m_cfg.darkSkyThresholdDeg)
-                ev.visibility = PassVisibility::RadioOnly;
-            else
-                ev.visibility = PassVisibility::Daylight;
+            // 后段, 旧分类（前段 TCA）会与展示字段自相矛盾。
+            // 前提守卫: 重推依赖 aos/tca/losSunAlt 与 Illum 字段有效——
+            // enableSunAnalysis 关闭时它们是结构默认值（0/FullSunlight/1.0）,
+            // 无条件重推会用假数据把分类翻转成 Visible, 与未合并段不一致
+            if (m_cfg.enableSunAnalysis && m_cfg.enableShadowCheck) {
+                double bestSunAlt = std::max({ev.aosSunAlt, ev.tcaSunAlt, ev.losSunAlt});
+                bool satLit = (ev.tcaSatShadow != ShadowStatus::InUmbra)
+                              && ev.tcaIllum > 0.5;
+                const double dark = m_cfg.darkSkyThresholdDeg
+                                    - horizonDipDeg(observer.altKm());
+                if (bestSunAlt < dark && satLit)
+                    ev.visibility = PassVisibility::Visible;
+                else if (bestSunAlt < m_cfg.darkSkyThresholdDeg)
+                    ev.visibility = PassVisibility::RadioOnly;
+                else
+                    ev.visibility = PassVisibility::Daylight;
+            }
         }
         passes = std::move(merged);
     }

@@ -85,9 +85,10 @@ QVariant PassTableModel::headerData(int section, Qt::Orientation orientation,
             "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
             "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
         };
-        if (section == ColAos)
-            return QStringLiteral("%1(%2)").arg(labels[section]).arg(tzLabel());
-        if (section == ColLos)
+        // 时间列（入境/出境/可见弧段）内容均经 jdMsToStr 按时区偏移,
+        // 表头须统一标注时区, 否则弧段列易被误读为 UTC
+        if (section == ColAos || section == ColLos
+            || section == ColArc)
             return QStringLiteral("%1(%2)").arg(labels[section]).arg(tzLabel());
         return QString::fromUtf8(labels[section]);
     }

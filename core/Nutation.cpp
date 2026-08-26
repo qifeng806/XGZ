@@ -101,10 +101,13 @@ inline double meanObliquityDegImpl(double jdTT)
 
 namespace Nutation {
 
-// 按日缓存: 章动日变化 < 0.3″，太阳位置等高频调用无需重复计算 63 项。
-// thread_local 保证多线程（预报 worker 并行）安全
+// 按日缓存: 章动日内变化实测界约 ±0.5″（主 D 项 1.32″ 与 (−2,0,0,2,2) 项
+// 合成角速率所致）——对太阳高度引入 ≤0.00014° 偏差, 远低于本应用
+// 0.01° 级精度需求, 换取省去高频路径的 63 项级数求值。
+// thread_local 保证多线程（预报 worker 并行）安全。
+// 初值 -1.0 防与 floor(jdTT)=0 的合法查询碰撞
 struct DayCache {
-    double jdDay = 0.0;
+    double jdDay = -1.0;
     Angles value;
 };
 thread_local DayCache g_cache;

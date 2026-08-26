@@ -119,7 +119,9 @@ std::optional<SunPosition> SunPositionCalc::compute(const double jdUtc,
         // ---- Step 8: 日地距离（AU） ----
         sp.distanceAU = distAU;
 
-        // ---- Step 9: 太阳地心方向单位矢量（ECI J2000） ----
+        // ---- Step 9: 太阳地心方向单位矢量（当日真赤道系, equinox-of-date——
+        // 非J2000: 由视黄经+当日真黄赤交角构成; 与 TEME（近似当日真赤道系）
+        // 卫星位置 + GMST 旋转配合在几何上自洽） ----
         sp.dirECI = {
             std::cos(dec) * std::cos(ra),
             std::cos(dec) * std::sin(ra),

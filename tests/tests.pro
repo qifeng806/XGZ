@@ -15,10 +15,10 @@ INCLUDEPATH += .. ../perturb-master/include
 # ---- 输出目录固定为基于 $$PWD 的绝对路径 ----
 # 保证无论从哪个目录执行 qmake/make，中间文件与测试可执行文件
 # 都落到 D:\AAAAAAAAA\XGZ\tests\release\ 下（moc 通过绝对 -I 路径解析）
-DESTDIR     = $$PWD/release
-OBJECTS_DIR = $$PWD/release/obj
-MOC_DIR     = $$PWD/release/moc
-INCLUDEPATH += $$PWD/release/moc
+DESTDIR     = release
+OBJECTS_DIR = release/obj
+MOC_DIR     = release/moc
+INCLUDEPATH += release/moc
 
 SOURCES += \
     main.cpp \

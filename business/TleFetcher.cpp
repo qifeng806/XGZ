@@ -57,12 +57,15 @@ void TleFetcher::cancel()
 {
     // 仅在存在活动请求时置取消标志: 无请求时置位会让下一次正常下载
     // 被 onReplyFinished 的静默分支误吞（数据丢弃且不弹框）
+    const bool hadActive = (m_reply != nullptr);
     if (m_reply) {
         m_cancelled = true;
         m_reply->abort();
     }
     m_timeoutTimer.reset();   // 请求已中止, 看门狗失效
-    emit finished();
+    // 仅真实收尾才通知: 空闲时空触发 finished 会让订阅者误执行
+    // "下载结束"恢复逻辑（当前调用点均幂等, 属语义卫生防御）
+    if (hadActive) emit finished();
 }
 
 void TleFetcher::startRequest(const QUrl &url, const QString &tag)

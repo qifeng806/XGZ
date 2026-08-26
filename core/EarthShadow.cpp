@@ -18,6 +18,15 @@ double EarthShadow::umbraFactor(const std::array<double, 3> &satECEF,
                                 const std::array<double, 3> &sunDirECEF,
                                 double sunDistAU)
 {
+    // NaN/Inf 防御: 非有限输入若放行, 三分支比较对 NaN 全 false 会被
+    // checkShadow 误判为 InPenumbra/半影——按「失败即不可见」原则返回
+    // 完全遮挡（与 propagate 失败点的消费语义一致; 纵深防御, 生产链路
+    // 上游 propagate/eciToEcef 已过滤非有限值）
+    if (!std::isfinite(satECEF[0]) || !std::isfinite(satECEF[1]) || !std::isfinite(satECEF[2])
+        || !std::isfinite(sunDirECEF[0]) || !std::isfinite(sunDirECEF[1]) || !std::isfinite(sunDirECEF[2])
+        || !std::isfinite(sunDistAU))
+        return 0.0;
+
     // ---- 日侧判定: 卫星到太阳方向分量为正 → 夹角 < 90° → 全日照 ----
     const double dotProduct = satECEF[0] * sunDirECEF[0]
                             + satECEF[1] * sunDirECEF[1]

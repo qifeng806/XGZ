@@ -89,16 +89,6 @@ std::optional<TleData> TleParser::parse(
         if (errOut) *errOut = err;
         return std::nullopt;
     }
-    
-    // 添加详细的长度错误信息
-    if (l1in.length() < 69) {
-        err.detail = "Line 1 too short: " + std::to_string(l1in.length()) + 
-                    " characters (minimum 69 required). Expected format: 1NNNNNU YYDDD.DDDDDDDD .XXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX-# NNNNN";
-    }
-    if (l2in.length() < 69) {
-        err.detail = "Line 2 too short: " + std::to_string(l2in.length()) + 
-                    " characters (minimum 69 required). Expected format: 2NNNNNU YYDDD.DDDDDDDD .XXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX XXXXXXX-# NNNNN";
-    }
 
     // ---- 步骤 2: 行号校验 ----
     if (l1in[0] != '1') {
@@ -112,16 +102,6 @@ std::optional<TleData> TleParser::parse(
         err.detail = "Line 2 must start with '2'";
         if (errOut) *errOut = err;
         return std::nullopt;
-    }
-    
-    // 添加行号错误的详细信息
-    if (l1in[0] != '1') {
-        err.detail = "Line 1 must start with '1', found '" + std::string(1, l1in[0]) + "'. " +
-                    "TLE format requires line numbers at position 1: '1' for first line, '2' for second line.";
-    }
-    if (l2in[0] != '2') {
-        err.detail = "Line 2 must start with '2', found '" + std::string(1, l2in[0]) + "'. " +
-                    "TLE format requires line numbers at position 1: '1' for first line, '2' for second line.";
     }
 
     // ---- 步骤 3: NORAD 编号（行1 列3-7） ----

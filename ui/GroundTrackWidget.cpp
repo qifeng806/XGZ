@@ -151,8 +151,10 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
     // 先于过境轨迹绘制，保证轨迹线不被大陆遮挡
     painter.setPen(QPen(QColor(120, 130, 148), 1));
     painter.setBrush(QColor(58, 68, 86));
-    if (m_projectedSize != QSize(w, h)) {
-        // 尺寸变化（首帧/resize）: 重建投影缓存
+    const qreal dpr = devicePixelRatioF();
+    if (m_projectedSize != QSize(w, h) || m_projectedDpr != dpr) {
+        // 尺寸/DPR 变化（首帧/resize/跨不同缩放显示器拖动）: 重建投影缓存
+        //（DPR 不入键则逻辑尺寸不变而物理尺寸变, 大陆轮廓错位拉伸）
         m_projectedLand.clear();
         m_projectedLand.reserve(m_landPolygons.size());
         for (const auto &poly : m_landPolygons) {
@@ -164,6 +166,7 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
             m_projectedLand.append(screen);
         }
         m_projectedSize = QSize(w, h);
+        m_projectedDpr = dpr;
     }
     for (const auto &screen : m_projectedLand)
         painter.drawPolygon(screen);

@@ -142,6 +142,7 @@ private:
 
     // 批量模式状态
     bool m_batchMode = false;         // 当前是否为批量预报
+    bool m_batchParsePending = false; // 批量后台解析在途（TleFetcher::finished 收尾守卫用）
     QStringList m_batchErrors;        // 批量中各任务错误信息（汇总显示）
     // onErrorOccurred 状态栏去重: 连续相同消息只刷一次, 防批量失败风暴逐条重绘
     QString m_lastErrorStatusText;

@@ -23,6 +23,10 @@ QVector<TleBlock> parseTleBlocks(const QString &text, int *incompleteCount)
     for (const QString &raw : lines) {
         const QString l = raw.trimmed();
         if (l.isEmpty()) continue;
+        // 注释行跳过（批量导入对话框承诺「含注释头时自动忽略」）:
+        // 若当作名称行, 「名称→注释→行1」序列会把卫星名替换为注释文本,
+        // 污染表格显示/身份键/导出
+        if (l.startsWith('#')) continue;
         if (isTleLine1(l)) {
             if (!pendingL1.isEmpty()) incomplete++;  // 上一颗只有行1 → 半截块
             pendingL1 = l;

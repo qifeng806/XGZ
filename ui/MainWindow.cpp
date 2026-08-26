@@ -27,6 +27,9 @@
 #include <QTimeZone>
 #include <QCloseEvent>
 #include <QtConcurrent>   // 导出文件写入异步化（Qt6 中 QtConcurrent 是独立模块, XGZ.pro 已 QT += concurrent）
+#include <QFutureWatcher>
+#include <cmath>          // std::abs（KML 反经线跨越断线）
+#include <vector>
 
 // ============================================================================
 // 批量 TLE 导入辅助（文件局部）
@@ -164,6 +167,11 @@ QString writePassesCsv(const QVector<const PassEvent *> &passes, const QString &
             << illumStr(p->tcaIllum) << ","
             << illumStr(p->losIllum) << "\n";
     }
+    // 写盘结果校验: 磁盘满/IO 错误时缓冲可能未落盘, 静默返回成功会生成
+    // 空或半截文件且 UI 报"导出成功"
+    out.flush();
+    if (out.status() != QTextStream::Ok || file.error() != QFileDevice::NoError)
+        return QStringLiteral("CSV 写入失败（磁盘空间不足或 IO 错误）: %1").arg(path);
     return QString();
 }
 
@@ -210,21 +218,44 @@ QString writePassesKml(const QVector<const PassEvent *> &passes, const QString &
             << "<name>Pass " << (i + 1) << ": "
             << xmlEsc(QString::fromStdString(p->satelliteName)) << " "
             << p->maxElevDeg << "°</name>\n"
-            << "<description>" << xmlEsc(desc) << "</description>\n"
-            << "<LineString><coordinates>";
-        // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点
-        if (p->samples.size() >= 2) {
-            for (const auto &s : p->samples) {
-                out << s.geo.lonDeg << "," << s.geo.latDeg << ",0 ";
+            << "<description>" << xmlEsc(desc) << "</description>\n";
+        // 优先绘制真实采样弧段；无采样时回退 AOS-TCA-LOS 三点。
+        // ±180° 反经线跨越断线: 相邻点经度差 >180° 时 KML 会画成横穿
+        // 整幅地图的长直线伪影——按跨越点切分为多个 LineString
+        //（与 GroundTrackWidget/PolarPlotWidget 的断线策略一致）
+        QVector<QVector<QPair<double, double>>> segs;
+        segs.append(QVector<QPair<double, double>>());
+        auto appendPt = [&segs](double lon, double lat) {
+            auto &cur = segs.last();
+            if (!cur.isEmpty()) {
+                const double prevLon = cur.last().first;
+                if (std::abs(lon - prevLon) > 180.0)
+                    segs.append(QVector<QPair<double, double>>());   // 跨反经线: 断开新段
             }
+            cur.append(qMakePair(lon, lat));
+        };
+        if (p->samples.size() >= 2) {
+            for (const auto &s : p->samples)
+                appendPt(s.geo.lonDeg, s.geo.latDeg);
         } else {
-            out << p->aosSatGeo.lonDeg << "," << p->aosSatGeo.latDeg << ",0 ";
-            out << p->tcaSatGeo.lonDeg << "," << p->tcaSatGeo.latDeg << ",0 ";
-            out << p->losSatGeo.lonDeg << "," << p->losSatGeo.latDeg << ",0 ";
+            appendPt(p->aosSatGeo.lonDeg, p->aosSatGeo.latDeg);
+            appendPt(p->tcaSatGeo.lonDeg, p->tcaSatGeo.latDeg);
+            appendPt(p->losSatGeo.lonDeg, p->losSatGeo.latDeg);
         }
-        out << "</coordinates></LineString>\n</Placemark>\n";
+        for (const auto &seg : segs) {
+            if (seg.size() < 2) continue;   // 单点无法成线
+            out << "<LineString><coordinates>";
+            for (const auto &pt : seg)
+                out << pt.first << "," << pt.second << ",0 ";
+            out << "</coordinates></LineString>\n";
+        }
+        out << "</Placemark>\n";
     }
     out << "</Document>\n</kml>\n";
+    // 写盘结果校验（同 CSV）: 磁盘满/IO 错误不得静默报成功
+    out.flush();
+    if (out.status() != QTextStream::Ok || file.error() != QFileDevice::NoError)
+        return QStringLiteral("KML 写入失败（磁盘空间不足或 IO 错误）: %1").arg(path);
     return QString();
 }
 
@@ -264,7 +295,9 @@ QString writePassesJson(const QVector<const PassEvent *> &passes, const QString 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly))
         return QStringLiteral("无法写入文件: %1").arg(path);
-    file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
+    if (file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented)) < 0
+        || file.error() != QFileDevice::NoError)
+        return QStringLiteral("JSON 写入失败（磁盘空间不足或 IO 错误）: %1").arg(path);
     return QString();
 }
 
@@ -546,17 +579,19 @@ void MainWindow::setupConnections()
     connect(m_tleFetcher.get(), &TleFetcher::finished, this, [this]() {
         // 检查对象是否仍然有效
         if (!this->isVisible()) return;
-        
+
+        // 批量态（含后台解析窗口期——m_batchMode 已由 startBatchFromBlocks
+        // 提前置位）: 入口保持禁用, 收尾由批量完成/失败路径统一负责。
+        // 此前无条件恢复会在解析窗口内越权启用预报/导出, 用户点击的
+        // 任务随后被 startBatch→cleanupAll 静默替换
+        if (m_batchMode) return;
+
         m_onlineUpdateBtn->setEnabled(true);
         m_onlineUpdateBtn->setText("下载 TLE");
         setExportEnabled(true);   // 下载结束, 导出入口恢复
-        // 下载收尾: 无计算任务（m_batchMode=false）时恢复预报入口与取消按钮。
-        // 不用 cancelBtn 状态作守卫: 下载期间取消按钮也处于可用状态
-        if (!m_batchMode) {
-            m_predictBtn->setEnabled(true);
-            m_batchImportBtn->setEnabled(true);
-            m_cancelBtn->setEnabled(false);
-        }
+        m_predictBtn->setEnabled(true);
+        m_batchImportBtn->setEnabled(true);
+        m_cancelBtn->setEnabled(false);
     });
     connect(m_cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
     connect(m_clearBtn,   &QPushButton::clicked, this, &MainWindow::onClear);
@@ -862,6 +897,13 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
     m_onlineUpdateBtn->setEnabled(false);
     setExportEnabled(false);
 
+    // 提前置位批量态: TleFetcher 的 finished 在 downloaded 同步链返回后才
+    // 发射——若等异步解析回调才置位, finished 的 !m_batchMode 守卫会在
+    // 解析窗口期越权恢复预报/导出入口, 用户随后点击的任务会被
+    // startBatch→cleanupAll 静默替换（凭空消失）
+    m_batchMode = true;
+    m_batchParsePending = true;
+
     // 批量解析在 QtConcurrent 线程池执行（TleParser 为纯函数, 无 UI 访问）:
     // 千颗级粘贴/下载在 GUI 线程串行解析会冻结界面数百毫秒。
     // UI 参数先快照为模板 job（后台线程禁止读取 UI 控件）
@@ -915,6 +957,14 @@ void MainWindow::startBatchParsed(const QVector<PassPredictWorker::Job> &jobs,
                                   int failed, int lenIssues, int fmtIssues,
                                   const QString &origin)
 {
+    // 解析在途期间可能已发生取消/清除（onCancel/onClear 复位 m_batchMode
+    // 并恢复按钮）: 迟到的解析结果作废, 不再启动批次
+    if (!m_batchParsePending || !m_batchMode) {
+        m_batchParsePending = false;
+        return;
+    }
+    m_batchParsePending = false;
+
     if (jobs.isEmpty()) {
         QString errorMsg = QString("批量导入失败: 共 %1 颗卫星，全部解析失败\n\n")
             .arg(failed);
@@ -936,7 +986,9 @@ void MainWindow::startBatchParsed(const QVector<PassPredictWorker::Job> &jobs,
         errorMsg += "3. 尝试从Celestrak或其他可靠来源重新下载TLE\n";
         errorMsg += "4. 使用单颗卫星导入测试具体的错误原因\n";
         
-        // 解析期已禁用入口（异步化）: 全部失败时恢复
+        // 解析期已禁用入口且 m_batchMode 已提前置位（异步化）: 全部失败时复位
+        m_batchMode = false;
+        m_cancelBtn->setEnabled(false);
         m_predictBtn->setEnabled(true);
         m_batchImportBtn->setEnabled(true);
         m_onlineUpdateBtn->setEnabled(true);
@@ -1045,6 +1097,7 @@ void MainWindow::onCancel()
         m_tleFetcher->cancel();
     }
     m_batchMode = false;
+    m_batchParsePending = false;   // 在途批量解析结果作废（startBatchParsed 守卫）
     m_batchErrors.clear();
     // 复位状态栏: 取消后不再显示已淘汰任务的模型/历元信息
     setStatusText(m_statusModel, "模型: —");
@@ -1086,6 +1139,7 @@ void MainWindow::onClear()
     // 使用互斥锁保护共享数据
     QMutexLocker dataLocker(&m_dataMutex);
     m_batchMode = false;
+    m_batchParsePending = false;   // 在途批量解析结果作废
     m_batchErrors.clear();
 
     m_tleInput1->clear();
@@ -1493,12 +1547,18 @@ void MainWindow::startExport(ExportKind kind, const QString &filePath)
 void MainWindow::onExportFinished()
 {
     // 检查对象是否仍然有效
-    if (!this->isVisible()) return;
+    if (!this->isVisible()) {
+        m_exportLock.fetchAndAddRelease(-1);   // 早退也必须释放（配对缺口会永久禁用导出）
+        return;
+    }
     
     // 检查是否正在关闭
     {
         QMutexLocker locker(&m_dataMutex);
-        if (m_isClosing) return;
+        if (m_isClosing) {
+            m_exportLock.fetchAndAddRelease(-1);
+            return;
+        }
     }
     
     // 增加UI更新计数器

@@ -35,6 +35,7 @@ private:
     // 尺寸不变时复用缓存结果
     QVector<QPolygonF> m_projectedLand;
     QSize m_projectedSize;               // 投影时的 widget 尺寸（变化即失效）
+    qreal m_projectedDpr = 0.0;          // 投影时的设备像素比（跨不同缩放显示器拖动时失效重建）
 
     bool loadLandData();                 // 从 :/land110m.txt 加载一次
     QPointF geoToScreen(double latDeg, double lonDeg,

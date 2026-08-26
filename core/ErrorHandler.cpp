@@ -17,76 +17,21 @@ ErrorHandler& ErrorHandler::instance()
 ErrorHandler::ErrorHandler()
     : m_autoRecoveryEnabled(true)
 {
-    // 注册默认的恢复函数
-    registerRecoveryFunction(ErrorType::TLE_PARSE_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // TLE解析错误的默认恢复策略
-            if (error.severity == ErrorSeverity::WARNING) {
-                // 对于警告级别的TLE解析错误，可以尝试跳过
-                return shouldSkip(error);
-            }
-            return false;
-        });
+    // 统一恢复契约: 仅 WARNING 级自动「跳过」（如校验和警告继续计算）;
+    // ERROR/CRITICAL 一律返回 false 走 errorOccurred 上报——
+    // 恢复函数是纯谓词不做任何实际动作, 把 ERROR/CRITICAL 判为
+    // 「恢复成功」会让 worker 静默 jobSkipped / 严重度倒置为跳过
+    const auto warningOnlySkip = [](const ErrorInfo& error) -> bool {
+        return error.severity == ErrorSeverity::WARNING;   // 与 shouldSkip 一致
+    };
 
-    registerRecoveryFunction(ErrorType::PROPAGATOR_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // 轨道传播器错误的默认恢复策略
-            if (error.severity == ErrorSeverity::ERROR) {
-                // 对于错误级别的传播器错误，可以尝试重试
-                return shouldRetry(error);
-            }
-            return false;
-        });
-
-    registerRecoveryFunction(ErrorType::ORBIT_CALC_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // 轨道计算错误的默认恢复策略
-            if (error.severity == ErrorSeverity::WARNING) {
-                // 对于警告级别的计算错误，可以尝试跳过
-                return shouldSkip(error);
-            }
-            return false;
-        });
-
-    registerRecoveryFunction(ErrorType::NETWORK_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // 网络错误的默认恢复策略
-            if (error.severity == ErrorSeverity::ERROR) {
-                // 对于网络错误，可以尝试重试（最多3次）
-                return shouldRetry(error);
-            }
-            return false;
-        });
-
-    registerRecoveryFunction(ErrorType::FILE_IO_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // 文件IO错误的默认恢复策略
-            if (error.severity == ErrorSeverity::WARNING) {
-                // 对于警告级别的文件IO错误，可以尝试跳过
-                return shouldSkip(error);
-            }
-            return false;
-        });
-
-    registerRecoveryFunction(ErrorType::CONFIG_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // 配置错误的默认恢复策略
-            if (error.severity == ErrorSeverity::CRITICAL) {
-                // 对于严重级别的配置错误，需要人工干预
-                return needsManualIntervention(error);
-            }
-            return false;
-        });
-
-    registerRecoveryFunction(ErrorType::UNKNOWN_ERROR,
-        [this](const ErrorInfo& error) -> bool {
-            // 未知错误的默认恢复策略
-            if (error.severity == ErrorSeverity::WARNING) {
-                // 对于警告级别的未知错误，可以尝试跳过
-                return shouldSkip(error);
-            }
-            return false;
-        });
+    registerRecoveryFunction(ErrorType::TLE_PARSE_ERROR, warningOnlySkip);
+    registerRecoveryFunction(ErrorType::PROPAGATOR_ERROR, warningOnlySkip);
+    registerRecoveryFunction(ErrorType::ORBIT_CALC_ERROR, warningOnlySkip);
+    registerRecoveryFunction(ErrorType::NETWORK_ERROR, warningOnlySkip);
+    registerRecoveryFunction(ErrorType::FILE_IO_ERROR, warningOnlySkip);
+    registerRecoveryFunction(ErrorType::CONFIG_ERROR, warningOnlySkip);
+    registerRecoveryFunction(ErrorType::UNKNOWN_ERROR, warningOnlySkip);
 }
 
 ErrorHandler::~ErrorHandler()
@@ -406,17 +351,10 @@ bool ErrorHandler::shouldRetry(const ErrorInfo& error) const
 
 bool ErrorHandler::shouldSkip(const ErrorInfo& error) const
 {
-    // 对于警告级别的错误，可以考虑跳过
-    if (error.severity == ErrorSeverity::WARNING) {
-        return true;
-    }
-
-    // 对于某些类型的错误，可以跳过当前任务继续执行
-    if (error.type == ErrorType::TLE_PARSE_ERROR) {
-        return true;
-    }
-
-    return false;
+    // 仅 WARNING 级可跳过（与构造函数注册的恢复策略一致——
+    // 此前 TLE_PARSE_ERROR 不看严重度一律 true, 会把「卫星已再入」
+    // 等 CRITICAL 错误误判为可跳过）
+    return error.severity == ErrorSeverity::WARNING;
 }
 
 bool ErrorHandler::needsManualIntervention(const ErrorInfo& error) const
