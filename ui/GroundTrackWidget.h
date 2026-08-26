@@ -7,6 +7,7 @@
 #include <QWidget>
 #include <QVector>
 #include <QPolygonF>
+#include <QPainterPath>
 #include "core/models.h"
 
 class GroundTrackWidget : public QWidget {
@@ -37,9 +38,18 @@ private:
     QSize m_projectedSize;               // 投影时的 widget 尺寸（变化即失效）
     qreal m_projectedDpr = 0.0;          // 投影时的设备像素比（跨不同缩放显示器拖动时失效重建）
 
+    // 轨迹路径缓存: 与陆地投影缓存同理, 以「指针集合 + 尺寸」为版本键
+    QVector<QPainterPath> m_trackPathCache;
+    QVector<const PassEvent *> m_pathKeyPasses;
+    QSize m_pathKeySize;
+
     bool loadLandData();                 // 从 :/land110m.txt 加载一次
     QPointF geoToScreen(double latDeg, double lonDeg,
                         double x0, double y0, double sx, double sy) const;
+
+    // 单条过境的轨迹路径构建（供缓存复用）
+    QPainterPath buildTrackPath(const PassEvent &p,
+                                double x0, double y0, double sx, double sy) const;
 };
 
 #endif // UI_GROUNDTRACKWIDGET_H

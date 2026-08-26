@@ -26,7 +26,9 @@ Observer::Observer(double latDeg, double lonDeg, double altKm, double minEl)
         mLonDeg = std::fmod(mLonDeg + 180.0, 360.0);
         if (mLonDeg < 0.0) mLonDeg += 360.0;
         mLonDeg -= 180.0;
-        mAltKm  = std::clamp(mAltKm, 0.0, 100.0);
+        mAltKm  = std::clamp(mAltKm, -1.0, 100.0);   // 下界与 UI spinbox 一致:
+                                                      // 负海拔（死海/洼地）合法,
+                                                      // horizonDipDeg 对负值钳 0 保守处理
         mMinEl  = std::clamp(mMinEl, 0.0, 90.0);
         
         // 检查转换后的ECEF坐标有效性

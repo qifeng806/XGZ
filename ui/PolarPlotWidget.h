@@ -6,6 +6,7 @@
 // =============================================================================
 #include <QWidget>
 #include <QVector>
+#include <QPainterPath>
 #include "core/models.h"
 
 class PolarPlotWidget : public QWidget {
@@ -20,7 +21,6 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     QVector<const PassEvent *> m_passes;
@@ -29,9 +29,16 @@ private:
     // 将仰角/方位角映射到绘图区域的笛卡尔坐标
     QPointF polarToScreen(double azDeg, double elDeg, double cx, double cy, double radius) const;
 
-    // 计算鼠标位置对应的仰角和方位角
-    void screenToPolar(const QPointF &pos, double &azDeg, double &elDeg,
-                       double cx, double cy, double radius) const;
+    // 单条过境的曲线路径构建（供缓存复用）
+    QPainterPath buildTrackPath(const PassEvent &p,
+                                double cx, double cy, double radius) const;
+
+    // 曲线路径缓存: 每帧为全部过境重建 Catmull-Rom 路径（批量数百条曲线 ×
+    // 数十采样点）在选中切换/resize 重绘风暴下开销明显——以「指针集合 + 尺寸」
+    // 为版本键（路径只依赖数据与屏幕几何）, 未变时复用
+    QVector<QPainterPath> m_pathCache;
+    QVector<const PassEvent *> m_pathKeyPasses;
+    QSize m_pathKeySize;
 };
 
 #endif // UI_POLARPLOTWIDGET_H

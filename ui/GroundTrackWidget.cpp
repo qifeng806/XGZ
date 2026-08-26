@@ -86,6 +86,39 @@ void GroundTrackWidget::clear()
     update();
 }
 
+// 单条过境的地面轨迹路径（供缓存复用; 静态: 不依赖成员状态）
+QPainterPath GroundTrackWidget::buildTrackPath(const PassEvent &p,
+                                               double x0, double y0, double sx, double sy) const
+{
+    QPainterPath trackPath;
+    if (p.samples.size() >= 2) {
+        // 真实地面轨迹: Catmull-Rom 平滑曲线（经过所有采样点）
+        // 跨越 ±180° 经线处断开分段平滑，避免整幅横穿伪影
+        auto screenPt = [&](const PassSample &s) {
+            return geoToScreen(s.geo.latDeg, s.geo.lonDeg, x0, y0, sx, sy);
+        };
+        QVector<QPointF> seg;
+        for (size_t k = 0; k < p.samples.size(); ++k) {
+            if (!seg.isEmpty()) {
+                const double dlon = std::abs(p.samples[k].geo.lonDeg
+                                             - p.samples[k - 1].geo.lonDeg);
+                if (dlon > 180.0) {       // 跨经线: 断开
+                    trackPath.addPath(CatmullRom::path(seg));
+                    seg.clear();
+                }
+            }
+            seg.append(screenPt(p.samples[k]));
+        }
+        trackPath.addPath(CatmullRom::path(seg));
+    } else {
+        // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
+        trackPath.moveTo(geoToScreen(p.aosSatGeo.latDeg, p.aosSatGeo.lonDeg, x0, y0, sx, sy));
+        trackPath.quadTo(geoToScreen(p.tcaSatGeo.latDeg, p.tcaSatGeo.lonDeg, x0, y0, sx, sy),
+                         geoToScreen(p.losSatGeo.latDeg, p.losSatGeo.lonDeg, x0, y0, sx, sy));
+    }
+    return trackPath;
+}
+
 QPointF GroundTrackWidget::geoToScreen(double latDeg, double lonDeg,
                                         double x0, double y0, double sx, double sy) const
 {
@@ -187,42 +220,24 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         QColor(115, 255, 125), QColor(255, 115, 115)
     };
 
+    // 轨迹路径缓存: 数据或尺寸未变时复用（每帧重建数百条 Catmull-Rom
+    // 轨迹在选中切换/resize 重绘风暴下开销明显, 与陆地投影缓存同理）
+    if (m_pathKeyPasses != m_passes || m_pathKeySize != QSize(w, h)) {
+        m_trackPathCache.resize(m_passes.size());
+        for (int pi = 0; pi < m_passes.size(); ++pi)
+            m_trackPathCache[pi] = buildTrackPath(*m_passes[pi], x0, y0, sx, sy);
+        m_pathKeyPasses = m_passes;
+        m_pathKeySize = QSize(w, h);
+    }
+
     for (int pi = 0; pi < m_passes.size(); ++pi) {
         const PassEvent *p = m_passes[pi];
         bool isSelected = (pi == m_selectedIndex);
         QColor col = trackColors[pi % trackColors.size()];
         if (!isSelected) col.setAlpha(160);
 
-        QPainterPath trackPath;
-        // 特征点（AOS/TCA/LOS 标记与贝塞尔回退共用）
-        QPointF aosP = geoToScreen(p->aosSatGeo.latDeg, p->aosSatGeo.lonDeg, x0, y0, sx, sy);
-        QPointF tcaP = geoToScreen(p->tcaSatGeo.latDeg, p->tcaSatGeo.lonDeg, x0, y0, sx, sy);
-        QPointF losP = geoToScreen(p->losSatGeo.latDeg, p->losSatGeo.lonDeg, x0, y0, sx, sy);
+        const QPainterPath &trackPath = m_trackPathCache[pi];
 
-        if (p->samples.size() >= 2) {
-            // 真实地面轨迹: Catmull-Rom 平滑曲线（经过所有采样点）
-            // 跨越 ±180° 经线处断开分段平滑，避免整幅横穿伪影
-            auto screenPt = [&](const PassSample &s) {
-                return geoToScreen(s.geo.latDeg, s.geo.lonDeg, x0, y0, sx, sy);
-            };
-            QVector<QPointF> seg;
-            for (size_t k = 0; k < p->samples.size(); ++k) {
-                if (!seg.isEmpty()) {
-                    double dlon = std::abs(p->samples[k].geo.lonDeg
-                                           - p->samples[k - 1].geo.lonDeg);
-                    if (dlon > 180.0) {       // 跨经线: 断开
-                        trackPath.addPath(CatmullRom::path(seg));
-                        seg.clear();
-                    }
-                }
-                seg.append(screenPt(p->samples[k]));
-            }
-            trackPath.addPath(CatmullRom::path(seg));
-        } else {
-            // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
-            trackPath.moveTo(aosP);
-            trackPath.quadTo(tcaP, losP);
-        }
         if (isSelected) {
             // 选中路径光晕（先宽后窄，突出主轨迹）
             QColor glow = col;
@@ -236,6 +251,10 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
         painter.drawPath(trackPath);
 
         if (isSelected) {
+            // 特征点标记（仅选中过境, 三点投影开销可忽略）
+            const QPointF aosP = geoToScreen(p->aosSatGeo.latDeg, p->aosSatGeo.lonDeg, x0, y0, sx, sy);
+            const QPointF tcaP = geoToScreen(p->tcaSatGeo.latDeg, p->tcaSatGeo.lonDeg, x0, y0, sx, sy);
+            const QPointF losP = geoToScreen(p->losSatGeo.latDeg, p->losSatGeo.lonDeg, x0, y0, sx, sy);
             painter.setPen(QPen(QColor(15, 20, 28), 1));
             painter.setBrush(QColor(0, 255, 200));
             painter.drawEllipse(aosP, 5, 5);

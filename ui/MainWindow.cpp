@@ -30,6 +30,7 @@
 #include <QFutureWatcher>
 #include <cmath>          // std::abs（KML 反经线跨越断线）
 #include <vector>
+#include <iterator>       // std::size（列宽数组 static_assert）
 
 // ============================================================================
 // 批量 TLE 导入辅助（文件局部）
@@ -342,7 +343,7 @@ void MainWindow::setupUI()
     m_latSpin->setRange(-90.0, 90.0);
     m_latSpin->setValue(39.9042);
     m_latSpin->setDecimals(4);
-    m_latSpin->setSuffix("°N");
+    m_latSpin->setSuffix("°");   // 不用 °N: 负值=南纬, 后缀 N 会显示成「-30°N」歧义
     inputLayout->addWidget(m_latSpin, 2, 1);
 
     inputLayout->addWidget(new QLabel("站经度(°):"), 2, 2);
@@ -350,7 +351,7 @@ void MainWindow::setupUI()
     m_lonSpin->setRange(-180.0, 180.0);
     m_lonSpin->setValue(116.4074);
     m_lonSpin->setDecimals(4);
-    m_lonSpin->setSuffix("°E");
+    m_lonSpin->setSuffix("°");   // 同上: 负值=西经
     inputLayout->addWidget(m_lonSpin, 2, 3);
 
     inputLayout->addWidget(new QLabel("海拔(km):"), 2, 4);
@@ -492,6 +493,8 @@ void MainWindow::setupUI()
         /* 最大仰角 */ 75, /* 方位角 */ 60, /* 可见性 */ 50, /* 太阳高度 */ 70, /* 卫星光照 */ 55,
         /* 可见弧段 */ 170, /* 入境位置 */ 165, /* 斜距 */ 85, /* 多普勒 */ 90, /* 星等 */ 55, /* 质量 */ 60
     };
+    static_assert(std::size(colWidths) == size_t(PassTableModel::ColCount),
+                  "列宽数组必须与 PassTableModel::ColCount 同步增删");
     for (int c = 0; c < 16; ++c)
         m_passTable->setColumnWidth(c, colWidths[c]);
     m_passTable->horizontalHeader()->setMinimumSectionSize(45);
