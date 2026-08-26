@@ -90,15 +90,14 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     }
 
     // 点集只计算一次（范围扫描与绘制共用），避免每条曲线重复遍历/分配
-    // 缓存按「指针集合 + 选中」失效: 数据未变的重绘（resize/遮挡/选中切换）
-    // 直接复用, 不再每帧重建
+    // 缓存按「指针集合」失效: 点集只依赖过境数据, 与选中无关;
+    // 数据未变的重绘（resize/遮挡/选中切换）直接复用
     QVector<QVector<QPointF>> curvePts;
-    if (m_cacheKeyPasses != m_passes || m_cacheKeySelection != m_selectedIndex) {
+    if (m_cacheKeyPasses != m_passes) {
         m_curvePtsCache.resize(curveIdx.size());
         for (int i = 0; i < curveIdx.size(); ++i)
             m_curvePtsCache[i] = curvePoints(*m_passes[curveIdx[i]]);
         m_cacheKeyPasses = m_passes;
-        m_cacheKeySelection = m_selectedIndex;
     }
     curvePts = m_curvePtsCache;
 

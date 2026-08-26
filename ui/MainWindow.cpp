@@ -510,6 +510,7 @@ void MainWindow::disconnectAllConnections()
     if (m_service) {
         disconnect(m_service.get(), &PassPredictorService::resultReady, this, &MainWindow::onResultsReady);
         disconnect(m_service.get(), &PassPredictorService::errorOccurred, this, &MainWindow::onError);
+        disconnect(m_service.get(), &PassPredictorService::checksumWarning, this, &MainWindow::onChecksumWarning);
         disconnect(m_service.get(), &PassPredictorService::batchProgress, this, nullptr);
         disconnect(m_service.get(), &PassPredictorService::metaInfo, this, &MainWindow::onMetaInfo);
     }
@@ -567,6 +568,10 @@ void MainWindow::setupConnections()
             this, &MainWindow::onResultsReady);
     connect(m_service.get(), &PassPredictorService::errorOccurred,
             this, &MainWindow::onError);
+    // 校验和警告独立通道: 仅状态栏去重提示——不入失败汇总、不弹窗、
+    // 不复位控件（计算仍在进行, resultReady 随后正常到达）
+    connect(m_service.get(), &PassPredictorService::checksumWarning,
+            this, &MainWindow::onChecksumWarning);
     connect(m_service.get(), &PassPredictorService::batchProgress,
             this, [this](int completed, int total) {
                 // 检查对象是否仍然有效
@@ -849,6 +854,14 @@ void MainWindow::startBatchFromBlocks(const QVector<TleBlock> &blocks,
     // 检查对象是否仍然有效
     if (!this->isVisible()) return;
 
+    // 解析期即禁用入口: 千颗级后台解析有数百毫秒窗口, 期间重复触发
+    // 会并发两个批次（seq 守卫保证结果不串, 但浪费计算且 UX 混乱）。
+    // 全部失败时由 startBatchParsed 失败分支恢复
+    m_predictBtn->setEnabled(false);
+    m_batchImportBtn->setEnabled(false);
+    m_onlineUpdateBtn->setEnabled(false);
+    setExportEnabled(false);
+
     // 批量解析在 QtConcurrent 线程池执行（TleParser 为纯函数, 无 UI 访问）:
     // 千颗级粘贴/下载在 GUI 线程串行解析会冻结界面数百毫秒。
     // UI 参数先快照为模板 job（后台线程禁止读取 UI 控件）
@@ -922,6 +935,12 @@ void MainWindow::startBatchParsed(const QVector<PassPredictWorker::Job> &jobs,
         errorMsg += "2. 确保每颗卫星包含完整的两行根数数据\n";
         errorMsg += "3. 尝试从Celestrak或其他可靠来源重新下载TLE\n";
         errorMsg += "4. 使用单颗卫星导入测试具体的错误原因\n";
+        
+        // 解析期已禁用入口（异步化）: 全部失败时恢复
+        m_predictBtn->setEnabled(true);
+        m_batchImportBtn->setEnabled(true);
+        m_onlineUpdateBtn->setEnabled(true);
+        setExportEnabled(true);
         
         QMessageBox::critical(this, origin, errorMsg);
         return;
@@ -1207,6 +1226,17 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     
     // 减少UI更新计数器
     m_uiUpdateCounter.fetchAndAddRelaxed(-1);
+}
+
+void MainWindow::onChecksumWarning(QString satelliteId)
+{
+    // 检查对象是否仍然有效
+    if (!this->isVisible()) return;
+    
+    // 仅状态栏去重提示: 校验和失败的 TLE 已正常参与计算（非致命）,
+    // 不入批量失败汇总、不弹模态框、不复位控件
+    showStatusDedup(QString("警告: 卫星 %1 的 TLE 校验和未通过, 计算结果仅供参考")
+                        .arg(satelliteId));
 }
 
 void MainWindow::onError(QString msg)

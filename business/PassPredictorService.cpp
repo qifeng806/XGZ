@@ -85,12 +85,12 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
                 emit errorOccurred(QString("卫星 %1 已跳过: %2")
                                        .arg(satelliteId, reason));
             });
-    // 校验和警告: 非致命继续, 不计数不跳过, 仅提示（状态栏去重后单条）
+    // 校验和警告: 非致命继续, 不计数不跳过——独立信号直通 UI 状态栏
+    //（不得复用 errorOccurred: 批量会误入失败汇总, 单星会错误弹窗）
     connect(worker.get(), &PassPredictWorker::checksumWarning, this,
             [this, seq](QString satelliteId) {
                 if (seq != m_batchSeq) return;
-                emit errorOccurred(QString("警告: 卫星 %1 的 TLE 校验和未通过, "
-                                           "计算结果仅供参考").arg(satelliteId));
+                emit checksumWarning(satelliteId);
             });
     connect(worker.get(), &PassPredictWorker::metaInfo, this,
             [this, seq](QString model, QString epochUtc, double ageDays) {
@@ -199,12 +199,11 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                 });
 
         // 校验和警告: 非致命继续, 不计数不跳过（completed 由 resultReady
-        // 正常结算）, 仅提示——状态栏去重后批量坏数据只提示一条
+        // 正常结算）——独立信号直通 UI 状态栏, 不得混入失败汇总
         connect(worker.get(), &PassPredictWorker::checksumWarning, this,
                 [this, seq](QString satelliteId) {
                     if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
-                    emit errorOccurred(QString("警告: 卫星 %1 的 TLE 校验和未通过, "
-                                               "计算结果仅供参考").arg(satelliteId));
+                    emit checksumWarning(satelliteId);
                 });
 
         connect(worker.get(), &PassPredictWorker::resultReady, thread, &QThread::quit);

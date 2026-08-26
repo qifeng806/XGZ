@@ -135,6 +135,30 @@ int main(int argc, char *argv[])
             background-color: #2b2b2b;
         }
         QMessageBox QLabel, QDialog QLabel { color: #e0e0e0; }
+        /* QMessageBox 展开详情时的内部文本框: 无具体规则会深底黑字 */
+        QMessageBox QTextEdit {
+            background-color: #1e1e1e;
+            color: #d0d0d0;
+            border: 1px solid #555;
+        }
+        /* 文件对话框: 全局 QWidget 兜底会给它深色背景, 但内部视图/列表/
+           侧栏/输入行文字仍是 palette 黑色（深底黑字不可读）——补齐配色。
+           QSidebar 继承 QListView、路径栏继承 QComboBox, 均被下列规则命中 */
+        QFileDialog {
+            background-color: #2b2b2b;
+            color: #d0d0d0;
+        }
+        QFileDialog QTreeView, QFileDialog QListView,
+        QFileDialog QLineEdit, QFileDialog QComboBox {
+            background-color: #1e1e1e;
+            color: #d0d0d0;
+            border: 1px solid #555;
+        }
+        QFileDialog QTreeView::item:selected, QFileDialog QListView::item:selected {
+            background-color: #4488cc;
+            color: #ffffff;
+        }
+        QFileDialog QLabel { color: #ccc; }
         QComboBox QAbstractItemView {
             background-color: #2b2b2b;
             color: #d0d0d0;

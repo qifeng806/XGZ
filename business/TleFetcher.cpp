@@ -134,8 +134,13 @@ void TleFetcher::onReplyFinished(QNetworkReply *reply)
             m_pendingTag.clear();
             // 本函数可能在 timeout→abort→finished 的同步重入链内被调用:
             // 此时销毁发送者 QTimer 属"槽内删除信号发送者"高风险模式
-            //（Qt6 连接数据 COW 通常兜住, 非保证）——延迟到下一轮事件循环
-            QTimer::singleShot(0, this, [this]() { m_timeoutTimer.reset(); });
+            //（Qt6 连接数据 COW 通常兜住, 非保证）——延迟到下一轮事件循环。
+            // 指针相等守卫: 若延迟期间 startRequest 已为新一轮请求重建了
+            // 看门狗, 不得把活动定时器误杀（否则新请求失去超时保护）
+            QTimer *timer = m_timeoutTimer.get();
+            QTimer::singleShot(0, this, [this, timer]() {
+                if (m_timeoutTimer.get() == timer) m_timeoutTimer.reset();
+            });
         }
         reply->deleteLater();   // 修复: 取消分支此前漏删 reply，反复取消会累积泄漏
         return;

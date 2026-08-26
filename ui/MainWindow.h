@@ -59,6 +59,8 @@ private slots:
     void onExportJSON();
     void onResultsReady(QVector<PassEvent> passes);
     void onError(QString msg);
+    // TLE 校验和警告: 非致命, 仅状态栏去重提示
+    void onChecksumWarning(QString satelliteId);
     void onTableRowSelected(int row, int col);
     void onMetaInfo(QString model, QString epochUtc, double ageDays);
 
