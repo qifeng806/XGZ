@@ -21,7 +21,7 @@
 #include <QMetaObject>
 #include <QMutex>
 #include <QMutexLocker>
-#include <QWaitCondition>
+#include <QAtomicInt>
 #include <memory>
 #include "core/models.h"
 #include "core/ErrorHandler.h"
@@ -82,8 +82,13 @@ private:
     void startBatchFromBlocks(const QVector<TleBlock> &blocks, const QString &origin);
     void startBatchParsed(const QVector<PassPredictWorker::Job> &jobs, int failed,
                           int lenIssues, int fmtIssues, const QString &origin);
-    // 按"仅显示可见过境"开关过滤 m_currentPasses → m_filteredPasses 并刷新全部视图
-    void applyFilterAndRefresh();
+    // 按"仅显示可见过境"开关过滤 m_currentPasses → m_filteredPasses 并刷新全部视图。
+    // preserveKey/preserveScroll: 调用方在共享数据被覆盖【之前】预快照的
+    // 选中身份键与滚动位置（如 onResultsReady —— 覆盖后 m_filteredPasses
+    // 旧指针即悬垂, 函数内部无法再安全读取）; 缺省时由函数内部从仍有效的
+    // m_filteredPasses 快照（过滤开关/时区切换路径）
+    void applyFilterAndRefresh(const QString &preserveKey = QString(),
+                               int preserveScroll = -1);
     // 统一错误处理接线（ctor 末尾调用）
     void setupErrorHandling();
     // 网络/严重错误专项处理与恢复动作
@@ -108,9 +113,9 @@ private:
     std::unique_ptr<QFutureWatcher<QString>> m_exportWatcher;
     
     // 线程同步机制
+    // 注: 曾有 QWaitCondition/QAtomicInt 计数器脚手架, 但全部增减均发生在
+    // GUI 线程槽内, 不存在并发竞争, 属误导性死重量, 已移除（第9轮审查 A6）
     mutable QMutex m_dataMutex;           // 保护共享数据的互斥锁
-    QWaitCondition m_dataReadyCondition;  // 数据就绪条件变量
-    QAtomicInt m_uiUpdateCounter;        // UI更新计数器，用于防止竞态
     bool m_isClosing;                     // 窗口关闭标志
     QAtomicInt m_exportLock;             // 导出锁，防止并发导出
 

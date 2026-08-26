@@ -8,6 +8,9 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QCoreApplication>
+#include <QtGlobal>
+#include <cmath>
+#include <limits>
 #include <cstdint>
 
 // 在多个候选路径中查找测试数据文件（覆盖从 build 目录/源码目录/任意 cwd 运行）
@@ -64,7 +67,7 @@ inline int64_t jdToMs(double jd)
     int64_t intMs = jdInt * 86400000LL;
     int64_t fracMs = static_cast<int64_t>(std::round(jdFrac * 86400000.0));
     
-    // 处理四舍五入导致的进位
+    // 处理四舍五入导致的进位（归一后 fracMs ∈ [0, 86400000)）
     if (fracMs >= 86400000LL) {
         intMs += 86400000LL;
         fracMs -= 86400000LL;
@@ -72,16 +75,7 @@ inline int64_t jdToMs(double jd)
         intMs -= 86400000LL;
         fracMs += 86400000LL;
     }
-    
-    // 最终结果检查
-    if (intMs > 0 && fracMs < 0) {
-        intMs--;
-        fracMs += 86400000LL;
-    } else if (intMs < 0 && fracMs > 0) {
-        intMs++;
-        fracMs -= 86400000LL;
-    }
-    
+
     return intMs + fracMs;
 }
 

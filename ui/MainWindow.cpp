@@ -33,6 +33,21 @@
 #include <iterator>       // std::size（列宽数组 static_assert）
 
 // ============================================================================
+// TLE 文本入口共用工具（文件局部）
+// ============================================================================
+namespace {
+// 剥离 UTF-8 BOM（U+FEFF, Windows 记事本"UTF-8 (BOM)"保存常见）:
+// U+FEFF 不属于空白字符, trimmed() 不剥; 残留时首行变 "\uFEFF1 ..."
+// 无法匹配行号前缀 "1 ", 首颗卫星被误判缺行而丢弃
+QString stripUtf8Bom(QString s)
+{
+    if (s.startsWith(QChar(0xFEFF)))
+        s.remove(0, 1);
+    return s;
+}
+} // namespace
+
+// ============================================================================
 // 批量 TLE 导入辅助（文件局部）
 // ============================================================================
 namespace {
@@ -86,7 +101,7 @@ public:
                 QMessageBox::warning(this, "批量导入", "无法读取文件: " + path);
                 return;
             }
-            m_edit->setPlainText(QString::fromUtf8(f.readAll()));
+            m_edit->setPlainText(stripUtf8Bom(QString::fromUtf8(f.readAll())));
         });
         connect(okBtn, &QPushButton::clicked, this, &QDialog::accept);
         connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
@@ -188,6 +203,10 @@ QString writePassesKml(const QVector<const PassEvent *> &passes, const QString &
         return QStringLiteral("无法写入文件: %1").arg(path);
     QTextStream out(&file);
     out.setEncoding(QStringConverter::Utf8);
+    // 坐标数值恒用 '.' 小数点（KML 规范要求）——QTextStream 浮点输出
+    // 默认跟随 locale, 逗号小数区域会产出 "116,4074" 非法坐标。
+    // 与 CSV 写入器的 setLocale 同源修复
+    out.setLocale(QLocale::c());
 
     out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         << "<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n"
@@ -649,7 +668,8 @@ void MainWindow::setupConnections()
 // ============================================================================
 // 按可见性开关过滤并刷新表格/图表/统计
 // ============================================================================
-void MainWindow::applyFilterAndRefresh()
+void MainWindow::applyFilterAndRefresh(const QString &preserveKey,
+                                       int preserveScroll)
 {
     // 检查对象是否仍然有效
     if (!this->isVisible()) return;
@@ -659,10 +679,7 @@ void MainWindow::applyFilterAndRefresh()
         QMutexLocker locker(&m_dataMutex);
         if (m_isClosing) return;
     }
-    
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
+
     // 使用互斥锁保护共享数据
     QMutexLocker dataLocker(&m_dataMutex);
     
@@ -680,16 +697,23 @@ void MainWindow::applyFilterAndRefresh()
     
     // 保存当前选中卫星身份与滚动位置: 过滤/时区切换后行序收缩,
     // 按行号恢复会漂移到另一颗卫星（越界钳到第 0 行同样漂移）,
-    // 必须以「卫星 + 过境时刻」身份键找回原选择
-    const int prevRow = (m_tableModel->rowCount() > 0)
-        ? m_passTable->currentIndex().row() : -1;
-    QString prevKey;
-    if (prevRow >= 0 && prevRow < m_filteredPasses.size()) {
-        const auto *prev = m_filteredPasses[prevRow];
-        prevKey = QString::number(prev->aosJdMs) + "|" +
-                  QString::fromStdString(prev->satelliteName);
+    // 必须以「卫星 + 过境时刻」身份键找回原选择。
+    // 身份键优先取调用方预快照（onResultsReady 路径: 共享数据已被覆盖,
+    // m_filteredPasses 的旧指针已悬垂, 在此解引用即 use-after-free）;
+    // 其余调用方共享数据未变, 现场快照安全
+    QString prevKey = preserveKey;
+    if (prevKey.isEmpty()) {
+        const int prevRow = (m_tableModel->rowCount() > 0)
+            ? m_passTable->currentIndex().row() : -1;
+        if (prevRow >= 0 && prevRow < m_filteredPasses.size()) {
+            const auto *prev = m_filteredPasses[prevRow];
+            prevKey = QString::number(prev->aosJdMs) + "|" +
+                      QString::fromStdString(prev->satelliteName);
+        }
     }
-    const int prevScroll = m_passTable->verticalScrollBar()->value();
+    // 滚动位置读取不依赖共享数据; 调用方显式传入时以其为准
+    const int prevScroll = (preserveScroll >= 0)
+        ? preserveScroll : m_passTable->verticalScrollBar()->value();
     
     // 更新过滤后的数据
     m_filteredPasses = filtered;
@@ -725,9 +749,6 @@ void MainWindow::applyFilterAndRefresh()
     }
     // 恢复滚动位置（模型重置后滚动条归零; 超界值由视图自动钳制）
     m_passTable->verticalScrollBar()->setValue(prevScroll);
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::setStatusText(QLabel *label, const QString &text)
@@ -756,8 +777,9 @@ void MainWindow::onPredict()
     // 检查对象是否仍然有效
     if (!this->isVisible()) return;
     
-    QString tle1 = m_tleInput1->toPlainText().trimmed();
-    QString tle2 = m_tleInput2->toPlainText().trimmed();
+    // 单星粘贴路径同样剥 BOM: 从带 BOM 文件复制首行时 U+FEFF 会随剪贴板带入
+    QString tle1 = stripUtf8Bom(m_tleInput1->toPlainText().trimmed());
+    QString tle2 = stripUtf8Bom(m_tleInput2->toPlainText().trimmed());
 
     if (tle1.isEmpty() || tle2.isEmpty()) {
         QMessageBox::warning(this, "输入错误", "请输入完整的 TLE 两行根数");
@@ -1125,10 +1147,7 @@ void MainWindow::onClear()
         QMutexLocker locker(&m_dataMutex);
         if (m_isClosing) return;
     }
-    
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
+
     // 清空视图的同时终止在途计算, 防止迟到的结果覆盖刚清空的界面。
     // 用 cleanupAll(2000) 而非 cancelAll: 在途线程被协作式取消后回收
     // （quit+wait), 反复"开始→清除"不残留空转线程/worker 对象
@@ -1173,9 +1192,6 @@ void MainWindow::onClear()
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     setExportEnabled(true);
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -1188,10 +1204,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         QMutexLocker locker(&m_dataMutex);
         m_isClosing = true;
     }
-    
-    // 唤醒所有等待的线程
-    m_dataReadyCondition.wakeAll();
-    
+
     // 首先断开所有信号槽连接，防止在取消过程中有信号触发导致访问已销毁的对象
     disconnectAllConnections();
     
@@ -1211,12 +1224,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // watcher 为局部变量且任务为纯函数、无 this 捕获, 可安全跑完被丢弃;
     // 进程退出时 QThreadPool 全局池析构会兜底等待（千颗级解析延迟数百 ms,
     // 属可接受的设计取舍）
-    
-    // 等待所有UI更新操作完成
-    while (m_uiUpdateCounter > 0) {
-        QThread::msleep(10);
-    }
-    
+
     event->accept();
 }
 
@@ -1233,13 +1241,26 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
         QMutexLocker locker(&m_dataMutex);
         if (m_isClosing) return;
     }
-    
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
+
     // 使用互斥锁保护共享数据
     QMutexLocker dataLocker(&m_dataMutex);
-    
+
+    // 预快照选中身份键与滚动位置: 必须在覆盖 m_currentPasses【之前】——
+    // 赋值后 QVector COW 缓冲更换, 旧 PassEvent 全部析构, m_filteredPasses
+    // 内的裸指针立即悬垂; 若让 applyFilterAndRefresh 自行快照即触发
+    // use-after-free（第二次预报起每次必现）
+    QString preserveKey;
+    {
+        const int prevRow = (m_tableModel->rowCount() > 0)
+            ? m_passTable->currentIndex().row() : -1;
+        if (prevRow >= 0 && prevRow < m_filteredPasses.size()) {
+            const auto *prev = m_filteredPasses[prevRow];
+            preserveKey = QString::number(prev->aosJdMs) + "|" +
+                          QString::fromStdString(prev->satelliteName);
+        }
+    }
+    const int preserveScroll = m_passTable->verticalScrollBar()->value();
+
     // 更新当前过境数据
     m_currentPasses = passes;
     
@@ -1257,8 +1278,8 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     // 释放数据锁
     dataLocker.unlock();
     
-    // 应用过滤和刷新
-    applyFilterAndRefresh();
+    // 应用过滤和刷新（传入预快照, 避免内部读取已悬垂的旧指针）
+    applyFilterAndRefresh(preserveKey, preserveScroll);
 
     // 批量模式收尾: 汇总失败信息（若有）
     if (wasBatchMode && !batchErrorsCopy.isEmpty()) {
@@ -1284,9 +1305,6 @@ void MainWindow::onResultsReady(QVector<PassEvent> passes)
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     setExportEnabled(true);
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::onChecksumWarning(QString satelliteId)
@@ -1310,10 +1328,7 @@ void MainWindow::onError(QString msg)
         QMutexLocker locker(&m_dataMutex);
         if (m_isClosing) return;
     }
-    
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
+
     // 使用互斥锁保护共享数据
     QMutexLocker dataLocker(&m_dataMutex);
     
@@ -1324,9 +1339,7 @@ void MainWindow::onError(QString msg)
         // 状态栏节流: 每 100 项刷一次进度, 防千颗级失败风暴逐条重绘
         // （实时总量由 batchProgress 进度条呈现, 最终失败数由汇总对话框给出）
         const bool throttleTick = (m_batchErrors.size() % 100 == 0);
-        
-        // 减少UI更新计数器
-        m_uiUpdateCounter.fetchAndAddRelaxed(-1);
+
         // 解锁后再碰 UI（项目约定: 锁内不做 setText 等界面操作）
         dataLocker.unlock();
         if (throttleTick) {
@@ -1352,9 +1365,6 @@ void MainWindow::onError(QString msg)
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
     setExportEnabled(true);
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
@@ -1367,17 +1377,12 @@ void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
         QMutexLocker locker(&m_dataMutex);
         if (m_isClosing) return;
     }
-    
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
+
     // 使用互斥锁保护共享数据
     QMutexLocker dataLocker(&m_dataMutex);
     
     // 批量模式由汇总文本统一展示，跳过逐星元信息
     if (m_batchMode) {
-        // 减少UI更新计数器
-        m_uiUpdateCounter.fetchAndAddRelaxed(-1);
         return;
     }
     
@@ -1391,9 +1396,6 @@ void MainWindow::onMetaInfo(QString model, QString epochUtc, double ageDays)
         .arg(epochUtc).arg(ageDays, 0, 'f', 1)
         .arg(stale ? " [数据过期]" : ""));
     m_statusEpoch->setStyleSheet(stale ? "color:#d04040;" : QString());
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 void MainWindow::onTableRowSelected(int row, int col)
@@ -1407,18 +1409,12 @@ void MainWindow::onTableRowSelected(int row, int col)
         if (m_isClosing) return;
     }
     
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
     Q_UNUSED(col);
     if (row >= 0 && row < m_tableModel->rowCount()) {
         m_polarPlot->setSelectedPass(row);
         m_dopplerPlot->setSelectedPass(row);
         m_groundTrack->setSelectedPass(row);
     }
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -1435,15 +1431,9 @@ void MainWindow::populateTable(const QVector<const PassEvent *> &passes)
         if (m_isClosing) return;
     }
     
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
     // 时区表头/时间列由 model 响应 setTimeZoneOffset 自动刷新
     m_tableModel->setTimeZoneOffset(m_timezoneCombo->currentData().toInt());
     m_tableModel->setPasses(passes);
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -1568,9 +1558,6 @@ void MainWindow::onExportFinished()
         }
     }
     
-    // 增加UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(1);
-    
     // 释放导出锁
     m_exportLock.fetchAndAddRelease(-1);
     
@@ -1585,9 +1572,6 @@ void MainWindow::onExportFinished()
     const QString err = m_exportWatcher->result();
     if (!err.isEmpty())
         QMessageBox::warning(this, "导出失败", err);
-    
-    // 减少UI更新计数器
-    m_uiUpdateCounter.fetchAndAddRelaxed(-1);
 }
 
 // ============================================================================
@@ -1595,7 +1579,6 @@ void MainWindow::onExportFinished()
 // ============================================================================
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , m_uiUpdateCounter(0)
     , m_isClosing(false)
     , m_exportLock(0)
 {
@@ -1619,18 +1602,10 @@ MainWindow::~MainWindow()
         QMutexLocker locker(&m_dataMutex);
         m_isClosing = true;
     }
-    
-    // 唤醒所有等待的线程
-    m_dataReadyCondition.wakeAll();
-    
+
     // 在析构前断开所有信号槽连接，防止在对象销毁后有信号触发
     disconnectAllConnections();
-    
-    // 等待所有UI更新操作完成
-    while (m_uiUpdateCounter > 0) {
-        QThread::msleep(10);
-    }
-    
+
     // 清理错误处理相关资源
     ErrorHandler::instance().clearErrorHistory();
     
@@ -1781,12 +1756,18 @@ void MainWindow::handleCriticalError(const ErrorInfo& error)
 {
     // 严重错误的特殊处理
     if (error.type == ErrorType::CONFIG_ERROR) {
+        // 批量模式下不弹模态询问框（与上方 CRITICAL 弹窗同一防刷屏门控:
+        // 千颗级批量会连弹等量模态框卡死界面）, 仅状态栏提示
+        if (m_batchMode) {
+            showStatusDedup(QString("配置错误: %1").arg(error.message));
+            return;
+        }
         // 配置错误，可能需要重置配置
         QMessageBox::StandardButton reply = QMessageBox::question(
-            this, "配置错误", 
+            this, "配置错误",
             error.message + "\n\n是否重置为默认配置？",
             QMessageBox::Yes | QMessageBox::No);
-        
+
         if (reply == QMessageBox::Yes) {
             resetToDefaultConfig();
         }

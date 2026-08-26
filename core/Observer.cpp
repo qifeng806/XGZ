@@ -39,13 +39,15 @@ Observer::Observer(double latDeg, double lonDeg, double altKm, double minEl)
     } catch (const std::exception &e) {
         // 记录错误信息（在实际应用中可以使用日志系统）
         // std::cerr << "观测站初始化失败: " << e.what() << std::endl;
-        
-        // 使用默认值
+
+        // 回退到赤道 (0,0) 海平面站, 并由该回退参数【重新生成】ECEF——
+        // 若直接置 mEcef={0,0,0} 会得到地心坐标, 与 (0,0,0) 站的真实
+        // ECEF≈(6378.137,0,0) 不自洽, lookAngle 几何全部失真
         mLatDeg = 0.0;
         mLonDeg = 0.0;
         mAltKm = 0.0;
         mMinEl = 0.0;
-        mEcef = {0.0, 0.0, 0.0};
+        mEcef = CoordTransform::geodeticToEcef(GeoPos(mLatDeg, mLonDeg, mAltKm));
     }
 }
 

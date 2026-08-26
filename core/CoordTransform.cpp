@@ -165,7 +165,10 @@ double CoordTransform::deltaTSeconds(double jdUtc)
         return -2.79;
     }
     if (year < 1920.0) {
-        double t = (year - 1900.0) / 100.0;
+        // Espenak & Meeus 标准定义 t 以"年"计（t = y − 1900）,
+        // 不做世纪缩放——误除 100 会让段内值停在 −2.79 附近,
+        // 与下一段起点 21.20s 形成 ~24s 边界跳变
+        double t = year - 1900.0;
         if (!std::isfinite(t)) return -2.79;  // 无效t值返回边界值
         return -2.79 + 1.494119 * t - 0.0598939 * t * t
              + 0.0061966 * t * t * t - 0.000197 * t * t * t * t;
@@ -319,20 +322,22 @@ CoordTransform::eciStateToEcef(const std::array<double, 3> &posTeme,
                                const std::array<double, 3> &velTeme,
                                double jdUt1)
 {
-    // 输入验证
+    // 输入验证（失败一律 NaN 哨兵: 与同文件 eciToEcef/eciDirToEcef 的
+    // 策略一致——{0,0,0} 是合法地心坐标, 零值哨兵会被下游当真实数据
+    // 计算出看似有效的错误结果; NaN 经 isfinite/NaN 比较自然拦截）
     if (!std::isfinite(jdUt1)) {
-        return {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};  // 无效输入返回零值
+        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
     }
     
     // 检查位置和速度矢量
     if (!std::isfinite(posTeme[0]) || !std::isfinite(posTeme[1]) || !std::isfinite(posTeme[2]) ||
         !std::isfinite(velTeme[0]) || !std::isfinite(velTeme[1]) || !std::isfinite(velTeme[2])) {
-        return {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};  // 无效矢量返回零值
+        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
     }
 
     double theta = gmstRad(jdUt1);
     if (!std::isfinite(theta)) {
-        return {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};  // 无效角度返回零值
+        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
     }
     
     double c = std::cos(theta);
@@ -340,7 +345,7 @@ CoordTransform::eciStateToEcef(const std::array<double, 3> &posTeme,
     
     // 检查三角函数值的有效性
     if (!std::isfinite(c) || !std::isfinite(s)) {
-        return {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};  // 无效三角函数返回零值
+        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
     }
 
     std::array<double, 3> posEcef = {
@@ -362,7 +367,7 @@ CoordTransform::eciStateToEcef(const std::array<double, 3> &posTeme,
     // 检查结果的有效性
     for (const auto& vec : {posEcef, velEcef}) {
         if (!std::isfinite(vec[0]) || !std::isfinite(vec[1]) || !std::isfinite(vec[2])) {
-            return {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};  // 无效结果返回零值
+            return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};  // 无效结果返回 NaN 哨兵
         }
     }
 

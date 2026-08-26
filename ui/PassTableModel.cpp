@@ -39,10 +39,12 @@ void PassTableModel::setTimeZoneOffset(int tzOffsetSec)
     // 释放锁再发射信号，避免死锁
     locker.unlock();
     
-    // 表头与时间列随之变化
-    emit headerDataChanged(Qt::Horizontal, ColAos, ColLos);
+    // 表头与时间列随之变化（时区敏感列含可见弧段 ColArc:
+    // 其表头打 tz 标签、单元格经 jdMsToStr 格式化, 漏通知会与
+    // 入境/出境列显示不一致）
+    emit headerDataChanged(Qt::Horizontal, ColAos, ColArc);
     if (!m_passes.isEmpty())
-        emit dataChanged(index(0, ColAos), index(rowCount() - 1, ColLos));
+        emit dataChanged(index(0, ColAos), index(rowCount() - 1, ColArc));
 }
 
 QString PassTableModel::tzLabel() const

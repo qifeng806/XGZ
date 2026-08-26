@@ -273,7 +273,11 @@ void GroundTrackWidget::paintEvent(QPaintEvent *)
     // 如果没有过境，显示提示
     if (m_passes.isEmpty()) {
         painter.setPen(QColor(175, 182, 195));
-        painter.setFont(QFont("Arial", 12));
+        // 基于应用字体只调字号（硬编码字体会绕过 main.cpp 的全局
+        // 字体设定, 中文文案经 Arial 回退渲染风格漂移）
+        QFont hintFont = painter.font();
+        hintFont.setPointSize(12);
+        painter.setFont(hintFont);
         painter.drawText(QRectF(x0, y0, plotW, plotH),
                          Qt::AlignCenter, "暂无过境数据");
     }

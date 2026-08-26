@@ -86,6 +86,22 @@ void TstCoordTransform::deltaTAndUtcGmst()
                             .arg(c.y).arg(dt, 0, 'f', 3).arg(c.refSec, 0, 'f', 3)));
     }
 
+    // 1900~1920 段边界连续性回归防护: 该段 Espenak & Meeus 多项式的
+    // t 曾被误除以 100（标准定义 t 以年计）, 使段内值停在 −2.79 附近,
+    // 与下一段起点 21.20s 形成 ~24s 跳变。正确实现 1920 年处恰为 ~21.19s,
+    // 与 1920 段 t=0 的 21.20s 无缝衔接
+    {
+        // 与实现的年→JD 线性关系互逆, 保证精确落在目标年份分段上
+        auto dtAtYear = [](double y) {
+            return CoordTransform::deltaTSeconds(2451545.0 + (y - 2000.0) * 365.2425);
+        };
+        const double dt1920 = dtAtYear(1920.0);
+        QVERIFY2(std::abs(dt1920 - 21.20) < 1.0,
+                 qPrintable(QString("ΔT(1920)=%1 s, 期望 ≈21.19 s").arg(dt1920)));
+        // 跨边界斜率连续: ±0.5 年内变化应平滑（误除 100 时此处跳变 ~23s）
+        QVERIFY(std::abs(dtAtYear(1920.5) - dtAtYear(1919.5)) < 1.0);
+    }
+
     // 连续性与范围: 1900~2150 全部有效且不越界（无 NaN/负值/突变）
     double prev = 0.0;
     for (double jd = jdFromUtc(1900, 1, 1, 0, 0, 0);

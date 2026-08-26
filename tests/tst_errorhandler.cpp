@@ -9,6 +9,13 @@
 class TstErrorHandler : public QObject {
     Q_OBJECT
 private slots:
+    // 每个用例后恢复 NETWORK_ERROR 默认策略——理由同 tst_passworker/
+    // tst_passservice 的 cleanup(): ErrorHandler 是进程级单例, 本套件注册的
+    // 自定义恢复函数会跨用例/跨测试类留存; testCustomRecoveryFunction 注册的
+    // lambda 捕获栈局部变量, 套件结束后若仍留存, 后续任何触发 NETWORK_ERROR
+    // 恢复路径的代码都会写入已销毁的栈对象（UB）
+    void cleanup();
+
     void testSingletonInstance();
     void testErrorCreation();
     void testErrorHandling();
@@ -249,6 +256,15 @@ void TstErrorHandler::testCustomRecoveryFunction()
     QVERIFY(success);
     
     qDebug() << "Custom recovery function test passed";
+}
+
+void TstErrorHandler::cleanup()
+{
+    // 恢复 NETWORK_ERROR 默认策略（与 ErrorHandler 构造函数注册的
+    // warningOnlySkip 契约一致: 仅 WARNING 级自动跳过）
+    ErrorHandler::instance().registerRecoveryFunction(
+        ErrorType::NETWORK_ERROR,
+        [](const ErrorInfo &e) { return e.severity == ErrorSeverity::WARNING; });
 }
 
 int runTstErrorHandler(int argc, char *argv[])

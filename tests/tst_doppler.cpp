@@ -7,6 +7,7 @@
 // =============================================================================
 #include <QtTest/QtTest>
 #include <cmath>
+#include <limits>
 #include <array>
 #include <utility>
 #include "core/DopplerCalc.h"
@@ -48,6 +49,7 @@ private slots:
     void signAndMagnitude();
     void geostationaryZeroShift();
     void ecefVelocityCoriolis();
+    void invalidInputReturnsNan();
 };
 
 void TstDoppler::signAndMagnitude()
@@ -95,6 +97,41 @@ void TstDoppler::ecefVelocityCoriolis()
     for (int i = 0; i < 3; ++i)
         QVERIFY(std::abs(out.second[i] - vE[i]) < 1e-6);  // 速度往返
                                         // 容忍 ω 值 (7.292115e-5 vs IERS) 微小差异
+}
+
+// 无效输入契约: 一律返回 NaN 哨兵（与 0.0 kHz 的真实过零值可区分,
+// 防止无效数据静默流入 PassSample 导出）
+void TstDoppler::invalidInputReturnsNan()
+{
+    const std::array<double, 3> sta = { 0.0, 0.0, 0.0 };
+    const double f = 1450.0;
+    auto near = ecefToTeme({ 8000.0, 0.0, 0.0 }, { -7.5, 0.0, 0.0 }, JD);
+
+    // 负载频 / 零载频: 反转符号契约 → 拒绝
+    QVERIFY(std::isnan(DopplerCalc::compute(near.first, near.second, JD, sta, -f)));
+    QVERIFY(std::isnan(DopplerCalc::compute(near.first, near.second, JD, sta, 0.0)));
+    // 非有限载频
+    QVERIFY(std::isnan(DopplerCalc::compute(near.first, near.second, JD, sta,
+                                            std::numeric_limits<double>::quiet_NaN())));
+    // 非有限历元
+    QVERIFY(std::isnan(DopplerCalc::compute(near.first, near.second,
+                                            std::numeric_limits<double>::infinity(),
+                                            sta, f)));
+    // 非有限状态矢量
+    const std::array<double, 3> bad = { std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0 };
+    QVERIFY(std::isnan(DopplerCalc::compute(bad, near.second, JD, sta, f)));
+    QVERIFY(std::isnan(DopplerCalc::compute(near.first, bad, JD, sta, f)));
+    QVERIFY(std::isnan(DopplerCalc::compute(near.first, near.second, JD, bad, f)));
+
+    // eciStateToEcef 失败透传: 无效 GMST 输入经 compute 返回 NaN
+    //（eciStateToEcef 自身契约: 失败返回 {NaN,NaN,NaN} 哨兵而非零矢量——
+    //  零矢量会被误当真实地心坐标产出看似有效的错误频移）
+    const auto out = CoordTransform::eciStateToEcef(
+        near.first, near.second, std::numeric_limits<double>::quiet_NaN());
+    for (int i = 0; i < 3; ++i) {
+        QVERIFY(std::isnan(out.first[i]));
+        QVERIFY(std::isnan(out.second[i]));
+    }
 }
 
 int runTstDoppler(int argc, char *argv[])

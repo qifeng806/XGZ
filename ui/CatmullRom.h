@@ -13,14 +13,19 @@
 namespace CatmullRom {
 
 // 将点列转成经过每个点的平滑 QPainterPath（不闭合成环）
-// pts 少于 2 个时返回仅含 moveTo 的空路径
+// pts 少于 2 个时: 空集返回空路径; 单点段补一条 0.02px 微线段——
+// 方位环绕/反经线断段后的孤立采样若生成纯 moveTo 空路径,
+// 该点会在图上完全消失
 inline QPainterPath path(const QVector<QPointF> &pts)
 {
     QPainterPath p;
     const int n = pts.size();
     if (n == 0) return p;
     p.moveTo(pts[0]);
-    if (n < 2) return p;
+    if (n < 2) {
+        p.lineTo(pts[0] + QPointF(0.02, 0.0));   // 微线段 → 画笔下呈圆点
+        return p;
+    }
 
     auto at = [&pts, n](int i) -> QPointF {
         if (i < 0)   return pts[0];
