@@ -631,9 +631,11 @@ LookAngle CoordTransform::computeLookAngle(
     const std::array<double, 3> &staECEF,
     double staLatDeg, double staLonDeg)
 {
-    // 输入验证
+    // 输入验证（失败回退 -91°: 明确低于地平线, 与 OrbitCalculator 的
+    // ELEV_FAILURE_SENTINEL 失败语义一致——0° 是合法的"恰好地平线"仰角,
+    // 会参与边界检测; -91° 永不触发 AOS/LOS 判定）
     if (!std::isfinite(staLatDeg) || !std::isfinite(staLonDeg)) {
-        return LookAngle(0.0, 0.0, 0.0);  // 无效输入返回零值
+        return LookAngle(-91.0, 0.0, 0.0);
     }
 
     // 相对矢量
@@ -646,7 +648,7 @@ LookAngle CoordTransform::computeLookAngle(
     // 检查输入坐标的有效性
     for (const auto& coord : {satECEF, staECEF}) {
         if (!std::isfinite(coord[0]) || !std::isfinite(coord[1]) || !std::isfinite(coord[2])) {
-            return LookAngle(0.0, 0.0, 0.0);  // 无效坐标返回零值
+            return LookAngle(-91.0, 0.0, 0.0);
         }
     }
 
@@ -660,7 +662,7 @@ LookAngle CoordTransform::computeLookAngle(
 
     // 检查ENU分量是否有效
     if (!std::isfinite(e) || !std::isfinite(n) || !std::isfinite(u)) {
-        return LookAngle(0.0, 0.0, 0.0);  // 无效ENU分量返回零值
+        return LookAngle(-91.0, 0.0, 0.0);
     }
 
     // 计算归一化的高度分量，并进行严格范围检查
@@ -672,7 +674,7 @@ LookAngle CoordTransform::computeLookAngle(
     
     // 检查结果是否为有效数值
     if (!std::isfinite(u_normalized)) {
-        return LookAngle(0.0, 0.0, 0.0);
+        return LookAngle(-91.0, 0.0, 0.0);
     }
 
     double elDeg = std::asin(u_normalized) * 180.0 / PI;

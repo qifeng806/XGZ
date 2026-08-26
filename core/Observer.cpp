@@ -60,8 +60,9 @@ LookAngle Observer::lookAngle(const std::array<double, 3> &satECEF) const
         // 记录错误信息（在实际应用中可以使用日志系统）
         // std::cerr << "观测角度计算失败: " << e.what() << std::endl;
         
-        // 返回默认值
-        return LookAngle(0.0, 0.0, 0.0);
+        // 失败回退 -91°: 明确低于地平线, 与 ELEV_FAILURE_SENTINEL 的
+        // "失败永不参与 AOS/LOS 边界检测"语义一致（0° 是合法仰角值）
+        return LookAngle(-91.0, 0.0, 0.0);
     }
 }
 

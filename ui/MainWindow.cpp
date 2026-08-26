@@ -1204,6 +1204,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_exportWatcher && m_exportWatcher->isRunning()) {
         m_exportWatcher->waitForFinished();
     }
+    // 批量后台解析任务（startBatchFromBlocks 的 QtConcurrent）无需等待:
+    // watcher 为局部变量且任务为纯函数、无 this 捕获, 可安全跑完被丢弃;
+    // 进程退出时 QThreadPool 全局池析构会兜底等待（千颗级解析延迟数百 ms,
+    // 属可接受的设计取舍）
     
     // 等待所有UI更新操作完成
     while (m_uiUpdateCounter > 0) {

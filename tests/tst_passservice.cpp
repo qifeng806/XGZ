@@ -46,6 +46,10 @@ PassPredictWorker::Job makeJob(const QString &name, const QString &l1, const QSt
 class TstPassService : public QObject {
     Q_OBJECT
 private slots:
+    // 每个用例（含失败场景）后恢复 TLE_PARSE_ERROR 默认策略——理由同
+    // tst_passworker（单例注册跨用例/跨测试类留存）
+    void cleanup();
+
     void batchMixedResults();
     void emptyBatchEmitsError();
     void singleJobWorks();
@@ -203,6 +207,14 @@ void TstPassService::singleJobWithRecoveredTleReportsSkip()
     QCOMPARE(err.count(), 1);
     QVERIFY(err.at(0).at(0).toString().contains("已跳过"));
     QCOMPARE(ready.count(), 0);
+}
+
+void TstPassService::cleanup()
+{
+    // 恢复 TLE_PARSE_ERROR 默认策略（R17 契约: 仅 WARNING 跳过）
+    ErrorHandler::instance().registerRecoveryFunction(
+        ErrorType::TLE_PARSE_ERROR,
+        [](const ErrorInfo &e) { return e.severity == ErrorSeverity::WARNING; });
 }
 
 int runTstPassService(int argc, char *argv[])

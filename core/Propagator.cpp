@@ -167,10 +167,11 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
             return false;
         }
         
-        // 分类带: 与 TleParser::classifyModel 同阈值、同基准（no_unkozai 周期）,
-        // 避免 225min 边界处两处标签打架:
-        //   < 225 min → LEO;  [225, 1400) min → MEO;
-        //   ≥ 1400 min → GEO（同步带 1436min 及其上下漂移轨道/超同步轨道均属此带）
+        // 分类带: 阈值与 TleParser::classifyModel 对齐（225/1400 min）,
+        // 但基准不同——此处用 Kozai 修正后平运动 no_unkozai 推周期（SGP4
+        // 实际采用, 更准）, 解析器用目录平运动 meanMotionRevDay。近边界
+        // 轨道两处标签可能相差一个 Kozai 修正量级; 仅影响展示字段
+        //（ephemerisType 标签）, 不影响传播路径本身
         if (periodMin < 225.0)          m_modelType = Sgp4Type::LEO_SGP4;
         else if (periodMin < 1400.0)    m_modelType = Sgp4Type::MEO_SDP4;
         else                            m_modelType = Sgp4Type::GEO_SDP4_DS;
