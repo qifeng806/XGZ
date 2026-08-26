@@ -244,7 +244,9 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 记录错误并尝试恢复
         bool recoverySuccess = ErrorHandler::instance().handleError(errorInfo);
         
-        // 恢复成功: 自动跳过（如传播器可重试场景）——通知调度层计数防悬挂
+        // 恢复成功: 自动跳过——通知调度层计数防悬挂
+        //（R17 契约: 默认策略仅 WARNING 级返回 true; createPropagatorError
+        // 固定 ERROR 级 → 实际恒走下方 errorOccurred 分支）
         if (recoverySuccess) {
             emit jobSkipped(satelliteId, details);
             return;

@@ -199,9 +199,10 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
 
     if (role != Qt::DisplayRole) return QVariant();
 
-    // 释放锁再返回结果，避免长时间持有锁
-    locker.unlock();
-    
+    // 全程持锁返回: 值均为标量/短字符串格式化（微秒级）, 无需中途解锁。
+    // 此前曾在此处 unlock——但 p 是受锁保护的引用, 解锁后继续解引用
+    // 属锁纪律错误（当前 GUI-only 线程模型下无实际竞争, 形式上仍应一致）
+
     switch (c) {
     case ColIndex:  return QString::number(index.row() + 1);
     case ColName:   return QString::fromStdString(p.satelliteName);
