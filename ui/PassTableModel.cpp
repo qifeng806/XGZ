@@ -177,7 +177,26 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
     }
 
     if (role == Qt::ForegroundRole) {
-        return QVariant();   // 统一白色前景（深色主题默认）
+        switch (c) {
+        case ColVis: {
+            QColor col;
+            switch (p.visibility) {
+            case PassVisibility::Visible:   col = QColor(0, 150, 0); break;
+            case PassVisibility::RadioOnly: col = QColor(0, 100, 180); break;
+            case PassVisibility::Daylight:  col = QColor(100, 100, 100); break;
+            }
+            return QBrush(col);
+        }
+        case ColMaxEl: {
+            QColor col;
+            if (p.maxElevDeg >= 50.0)      col = QColor(0, 160, 0);
+            else if (p.maxElevDeg >= 20.0) col = QColor(200, 150, 0);
+            else                           col = QColor(200, 80, 0);
+            return QBrush(col);
+        }
+        default:
+            return QVariant();
+        }
     }
 
     if (role != Qt::DisplayRole) return QVariant();

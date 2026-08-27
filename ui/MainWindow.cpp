@@ -521,6 +521,10 @@ void MainWindow::setupUI()
     m_passTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_passTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_passTable->setAlternatingRowColors(false);
+    m_passTable->setStyleSheet(
+        "QTableView { background-color: white; color: black; }"
+        "QTableView::item:selected { background-color: #3399ff; color: white; }"
+    );
     m_passTable->verticalHeader()->setVisible(false);
     m_tabWidget->addTab(m_passTable, "过境列表");
 
