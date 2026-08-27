@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <cmath>
+#include <limits>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -102,7 +103,9 @@ void DopplerPlotWidget::paintEvent(QPaintEvent *)
     curvePts = m_curvePtsCache;
 
     // 数据范围: X = 0..maxDuration, Y = [min, max]
-    double xMax = 0.0, yMin = 0.0, yMax = 0.0;
+    double xMax = 0.0;
+    double yMin = std::numeric_limits<double>::max();
+    double yMax = std::numeric_limits<double>::lowest();
     for (const auto &pts : curvePts) {
         for (const auto &pt : pts) {
             xMax = std::max(xMax, pt.x());

@@ -1489,8 +1489,9 @@ void MainWindow::startExport(ExportKind kind, const QString &filePath)
     
     // 使用原子操作检查导出锁
     if (m_exportLock.fetchAndAddAcquire(1) != 0) {
-        // 如果已经有导出在进行，直接返回
+        // 如果已经有导出在进行，提示用户并返回
         m_exportLock.fetchAndAddRelease(-1);
+        showStatusDedup(QStringLiteral("导出正在进行中，请稍候"));
         return;
     }
     

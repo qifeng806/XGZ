@@ -51,7 +51,7 @@ double DopplerCalc::compute(const std::array<double, 3> &rTeme,
     if (dist < 1e-9) return 0.0;   // 星站重合: 无意义几何, 返回真实 0
     const double lx = dx / dist, ly = dy / dist, lz = dz / dist;
 
-    // ---- Step 3: 径向速度（靠近为负 → 按照公式 doppler = −v_radial / c × f） ----
+    // ---- Step 3: 径向速度（远离为正, 靠近为负 → 多普勒频移 = −v_radial / c × f） ----
     double vRadial = vECEF[0] * lx + vECEF[1] * ly + vECEF[2] * lz;
 
     // ---- Step 4: 多普勒频移（kHz） ----
