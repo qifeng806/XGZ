@@ -520,7 +520,7 @@ void MainWindow::setupUI()
     m_passTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_passTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_passTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_passTable->setAlternatingRowColors(true);
+    m_passTable->setAlternatingRowColors(false);
     m_passTable->verticalHeader()->setVisible(false);
     m_tabWidget->addTab(m_passTable, "过境列表");
 
