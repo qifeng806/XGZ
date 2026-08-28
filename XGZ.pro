@@ -21,13 +21,13 @@ SOURCES += \
     core/Nutation.cpp \
     core/EarthShadow.cpp \
     core/DopplerCalc.cpp \
-    core/Magnitude.cpp \
+    core/VisualMagnitude.cpp \
     core/OrbitCalculator.cpp \
     core/ErrorHandler.cpp \
     business/PassPredictWorker.cpp \
     business/PassPredictorService.cpp \
     business/TleFetcher.cpp \
-    business/TleBlocks.cpp \
+    business/TleBatchParser.cpp \
     ui/MainWindow.cpp \
     ui/PolarPlotWidget.cpp \
     ui/GroundTrackWidget.cpp \
@@ -38,7 +38,7 @@ SOURCES += \
     perturb-master/src/tle.cpp
 
 HEADERS += \
-    core/models.h \
+    core/DataTypes.h \
     core/Propagator.h \
     core/TleParser.h \
     core/CoordTransform.h \
@@ -47,19 +47,19 @@ HEADERS += \
     core/Nutation.h \
     core/EarthShadow.h \
     core/DopplerCalc.h \
-    core/Magnitude.h \
+    core/VisualMagnitude.h \
     core/OrbitCalculator.h \
     core/AtomicCancelFlag.h \
     core/ErrorHandler.h \
     business/PassPredictWorker.h \
     business/PassPredictorService.h \
     business/TleFetcher.h \
-    business/TleBlocks.h \
+    business/TleBatchParser.h \
     ui/MainWindow.h \
     ui/PolarPlotWidget.h \
     ui/GroundTrackWidget.h \
     ui/DopplerPlotWidget.h \
-    ui/CatmullRom.h \
+    ui/CatmullRomSpline.h \
     ui/PassTableModel.h \
     perturb-master/include/perturb/perturb.hpp \
     perturb-master/include/perturb/sgp4.hpp \

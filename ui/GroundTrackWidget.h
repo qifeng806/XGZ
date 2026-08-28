@@ -8,7 +8,7 @@
 #include <QVector>
 #include <QPolygonF>
 #include <QPainterPath>
-#include "core/models.h"
+#include "core/DataTypes.h"
 
 class GroundTrackWidget : public QWidget {
     Q_OBJECT

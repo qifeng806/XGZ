@@ -4,7 +4,7 @@
 // OrbitCalculator.h — 过境预报引擎
 // 完整流程: 粗搜(15s步) → 二分精化(18次) → TCA扫描 → 光照/多普勒 → 事件组装
 // =============================================================================
-#include "models.h"
+#include "DataTypes.h"
 #include "Observer.h"
 #include "AtomicCancelFlag.h"
 #include <atomic>

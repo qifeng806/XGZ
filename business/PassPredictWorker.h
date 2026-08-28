@@ -7,7 +7,7 @@
 #include <QVector>
 #include <QDateTime>
 #include <atomic>
-#include "core/models.h"
+#include "core/DataTypes.h"
 #include "core/OrbitCalculator.h"
 #include "core/AtomicCancelFlag.h"
 

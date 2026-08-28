@@ -5,7 +5,7 @@
 // 给定 JD 和观测站经纬度 → 输出太阳方位角/高度角/RA/Dec/日地距离
 // 精度约 0.01°（1950–2050 年范围），足够过境可见性判定
 // =============================================================================
-#include "models.h"
+#include "DataTypes.h"
 #include <optional>
 
 class SunPositionCalc {

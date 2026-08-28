@@ -2,7 +2,7 @@
 // PolarPlotWidget.cpp — 极坐标图实现
 // =============================================================================
 #include "PolarPlotWidget.h"
-#include "CatmullRom.h"
+#include "CatmullRomSpline.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <cmath>
@@ -80,13 +80,13 @@ QPainterPath PolarPlotWidget::buildTrackPath(const PassEvent &p,
             if (!seg.isEmpty()) {
                 const double daz = std::abs(s.look.azDeg - p.samples[k - 1].look.azDeg);
                 if (daz > 180.0) {    // 跨 0°/360°: 断开
-                    path.addPath(CatmullRom::path(seg));
+                    path.addPath(CatmullRomSpline::path(seg));
                     seg.clear();
                 }
             }
             seg.append(polarToScreen(s.look.azDeg, s.look.elevDeg, cx, cy, radius));
         }
-        path.addPath(CatmullRom::path(seg));
+        path.addPath(CatmullRomSpline::path(seg));
     } else {
         // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
         path.moveTo(polarToScreen(p.aosLook.azDeg, p.aosLook.elevDeg, cx, cy, radius));

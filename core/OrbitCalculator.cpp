@@ -6,7 +6,7 @@
 #include "SunPosition.h"
 #include "EarthShadow.h"
 #include "DopplerCalc.h"
-#include "Magnitude.h"
+#include "VisualMagnitude.h"
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -131,10 +131,10 @@ static void fillPassDetails(PassEvent &ev,
                     std::array<double, 3> sunPosE;
                     for (int k = 0; k < 3; ++k)
                         sunPosE[k] = sunDirE[k] * (sunT->distanceAU * EarthShadow::AU_KM);
-                    const double phase = MagnitudeCalc::phaseAngleRad(satE, sunPosE,
+                    const double phase = VisualMagnitudeCalc::phaseAngleRad(satE, sunPosE,
                                                                       observer.ecef());
-                    ev.magAtTca = MagnitudeCalc::visualMagnitude(
-                        MagnitudeCalc::standardMagnitude(ev.satelliteName, cfg.stdMagFallback),
+                    ev.magAtTca = VisualMagnitudeCalc::visualMagnitude(
+                        VisualMagnitudeCalc::standardMagnitude(ev.satelliteName, cfg.stdMagFallback),
                         ev.tcaLook.rangeKm, phase);
                     // 本影中卫星不可见，公式前提（太阳无遮挡）不成立 → 标为无效
                     ev.magValid = (ev.tcaSatShadow != ShadowStatus::InUmbra)

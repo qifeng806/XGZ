@@ -13,7 +13,7 @@
 #include <QAtomicInt>
 #include <atomic>
 #include <memory>
-#include "core/models.h"
+#include "core/DataTypes.h"
 #include "PassPredictWorker.h"
 
 class QTimer;

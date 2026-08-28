@@ -10,7 +10,7 @@
 #include <QDir>
 #include <QFont>
 #include "ui/MainWindow.h"
-#include "core/models.h"
+#include "core/DataTypes.h"
 
 // 注册跨线程信号槽的自定义类型（必须在 QApplication 构造前完成）
 static void registerMetaTypes()

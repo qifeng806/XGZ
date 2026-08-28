@@ -4,7 +4,7 @@
 // Observer.h — 地面观测站
 // 封装地面站 WGS84 坐标，预计算 ECEF 位置，提供站心观测接口
 // =============================================================================
-#include "models.h"
+#include "DataTypes.h"
 #include <array>
 
 class Observer {

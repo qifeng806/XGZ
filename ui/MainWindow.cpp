@@ -5,7 +5,7 @@
 #include "PolarPlotWidget.h"
 #include "GroundTrackWidget.h"
 #include "DopplerPlotWidget.h"
-#include "business/TleBlocks.h"
+#include "business/TleBatchParser.h"
 #include "core/TleParser.h"
 #include "core/CoordTransform.h"
 #include "core/ErrorHandler.h"

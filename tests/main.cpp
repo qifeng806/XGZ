@@ -6,7 +6,7 @@
 #include <QtTest/QtTest>
 #include <QByteArray>
 #include <QVector>
-#include "core/models.h"
+#include "core/DataTypes.h"
 #include "tst_runners.h"
 
 namespace {
@@ -44,14 +44,14 @@ int main(int argc, char *argv[])
     struct Runner { const char *tag; int (*fn)(int, char *[]); };
     const Runner runners[] = {
         { "tleparser",      runTstTleParser },
-        { "tleblocks",      runTstTleBlocks },
+        { "tlebatchparser",      runTstTleBatchParser },
         { "coordtransform", runTstCoordTransform },
         { "sunposition",    runTstSunPosition },
         { "nutation",       runTstNutation },
         { "earthshadow",    runTstEarthShadow },
         { "propagator",     runTstPropagator },
         { "orbitcalc",      runTstOrbitCalc },
-        { "magnitude",      runTstMagnitude },
+        { "magnitude",      runTstVisualMagnitude },
         { "doppler",        runTstDoppler },
         { "errorhandler",   runTstErrorHandler },
         { "passworker",     runTstPassWorker },

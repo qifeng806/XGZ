@@ -1,7 +1,7 @@
 // =============================================================================
-// TleBlocks.cpp — 多颗 TLE 文本块解析实现
+// TleBatchParser.cpp — 多颗 TLE 文本块解析实现
 // =============================================================================
-#include "TleBlocks.h"
+#include "TleBatchParser.h"
 
 QVector<TleBlock> parseTleBlocks(const QString &text, int *incompleteCount)
 {

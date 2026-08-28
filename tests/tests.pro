@@ -26,11 +26,11 @@ SOURCES += \
     tst_coordtransform.cpp \
     tst_sunposition.cpp \
     tst_nutation.cpp \
-    tst_tleblocks.cpp \
+    tst_tlebatchparser.cpp \
     tst_earthshadow.cpp \
     tst_propagator.cpp \
     tst_orbitcalc.cpp \
-    tst_magnitude.cpp \
+    tst_visualmagnitude.cpp \
     tst_doppler.cpp \
     tst_errorhandler.cpp \
     tst_passworker.cpp \
@@ -43,10 +43,10 @@ SOURCES += \
     ../core/Nutation.cpp \
     ../core/EarthShadow.cpp \
     ../core/DopplerCalc.cpp \
-    ../core/Magnitude.cpp \
+    ../core/VisualMagnitude.cpp \
     ../core/OrbitCalculator.cpp \
     ../core/ErrorHandler.cpp \
-    ../business/TleBlocks.cpp \
+    ../business/TleBatchParser.cpp \
     ../business/PassPredictWorker.cpp \
     ../business/PassPredictorService.cpp \
     ../perturb-master/src/perturb.cpp \

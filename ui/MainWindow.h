@@ -23,11 +23,11 @@
 #include <QMutexLocker>
 #include <QAtomicInt>
 #include <memory>
-#include "core/models.h"
+#include "core/DataTypes.h"
 #include "core/ErrorHandler.h"
 #include "business/PassPredictorService.h"
 #include "business/TleFetcher.h"
-#include "business/TleBlocks.h"
+#include "business/TleBatchParser.h"
 #include "PassTableModel.h"
 
 QT_BEGIN_NAMESPACE

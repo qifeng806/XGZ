@@ -10,7 +10,7 @@
 #include <QVector>
 #include <QMutex>
 #include <QMutexLocker>
-#include "core/models.h"
+#include "core/DataTypes.h"
 
 class PassTableModel : public QAbstractTableModel {
     Q_OBJECT

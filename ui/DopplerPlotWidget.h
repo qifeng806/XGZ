@@ -8,7 +8,7 @@
 #include <QWidget>
 #include <QVector>
 #include <QPointF>
-#include "core/models.h"
+#include "core/DataTypes.h"
 
 class DopplerPlotWidget : public QWidget {
     Q_OBJECT

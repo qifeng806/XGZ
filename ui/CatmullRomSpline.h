@@ -1,5 +1,5 @@
-#ifndef UI_CATMULLROM_H
-#define UI_CATMULLROM_H
+#ifndef UI_CATMULLROMSPLINE_H
+#define UI_CATMULLROMSPLINE_H
 // =============================================================================
 // CatmullRom.h — 采样点平滑曲线工具（Catmull-Rom → 三次贝塞尔）
 // 均匀参数 Catmull-Rom 经过所有控制点，用相邻四点的中点切线构造贝塞尔段:
@@ -10,7 +10,7 @@
 #include <QPointF>
 #include <QVector>
 
-namespace CatmullRom {
+namespace CatmullRomSpline {
 
 // 将点列转成经过每个点的平滑 QPainterPath（不闭合成环）
 // pts 少于 2 个时: 空集返回空路径; 单点段补一条 0.02px 微线段——
@@ -45,6 +45,6 @@ inline QPainterPath path(const QVector<QPointF> &pts)
     return p;
 }
 
-} // namespace CatmullRom
+} // namespace CatmullRomSplineSpline
 
-#endif // UI_CATMULLROM_H
+#endif // UI_CATMULLROMSPLINE_H

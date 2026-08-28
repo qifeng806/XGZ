@@ -1,7 +1,7 @@
-#ifndef CORE_MAGNITUDE_H
-#define CORE_MAGNITUDE_H
+#ifndef CORE_VISUALMAGNITUDE_H
+#define CORE_VISUALMAGNITUDE_H
 // =============================================================================
-// Magnitude.h — 卫星视星等估算（Vallerie 1963 相位模型）
+// VisualMagnitude.h — 卫星视星等估算（Vallerie 1963 相位模型）
 // 公式: m = m₀ − 15 + 5·log10(R) − 2.5·log10(f(B))
 //   m₀ = 固有星等（1000 km、满相位）; R = 观测者-卫星斜距(km)
 //   f(B) = (sin B + (π − B)·cos B)/π  = 朝向观测者的受照圆面比例
@@ -14,7 +14,7 @@
 #include <array>
 #include <string>
 
-class MagnitudeCalc {
+class VisualMagnitudeCalc {
 public:
     // 按名称子串匹配内置星等目录（不区分大小写思路: 目录项直接用大写）；
     // 未命中返回 fallback。卫星名来自 TLE 名称行或 NORAD 编号。
@@ -30,4 +30,4 @@ public:
     static double visualMagnitude(double stdMag, double rangeKm, double phaseRad);
 };
 
-#endif // CORE_MAGNITUDE_H
+#endif // CORE_VISUALMAGNITUDE_H

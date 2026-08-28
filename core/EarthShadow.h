@@ -5,7 +5,7 @@
 // 用太阳视半径与地球视半径的几何关系区分本影/半影/全日照
 // 参考 Vallado, "Fundamentals of Astrodynamics" §3.7（圆锥地影）
 // =============================================================================
-#include "models.h"
+#include "DataTypes.h"
 #include <array>
 
 class EarthShadow {

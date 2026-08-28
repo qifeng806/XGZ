@@ -1,12 +1,12 @@
 // =============================================================================
-// tst_tleblocks.cpp — 多 TLE 文本块解析单元测试
+// tst_tlebatchparser.cpp — 多 TLE 文本块解析单元测试
 // 覆盖: 标准 3LE | 纯两行 | 名称行误判防护 | 注释行 | 短行/畸形输入
 // =============================================================================
 #include <QtTest/QtTest>
-#include "business/TleBlocks.h"
+#include "business/TleBatchParser.h"
 #include "tst_runners.h"
 
-class TstTleBlocks : public QObject {
+class TstTleBatchParser : public QObject {
     Q_OBJECT
 private slots:
     void singleThreeLine();
@@ -27,7 +27,7 @@ const QString L2 = QStringLiteral(
 
 } // namespace
 
-void TstTleBlocks::singleThreeLine()
+void TstTleBatchParser::singleThreeLine()
 {
     const QString text = "ISS (ZARYA)\n" + L1 + "\n" + L2 + "\n";
     const auto blocks = parseTleBlocks(text);
@@ -37,7 +37,7 @@ void TstTleBlocks::singleThreeLine()
     QCOMPARE(blocks[0].line2, L2);
 }
 
-void TstTleBlocks::multipleBlocks()
+void TstTleBatchParser::multipleBlocks()
 {
     const QString text = "SAT-A\n" + L1 + "\n" + L2 + "\n"
                        + "SAT-B\n" + L1 + "\n" + L2 + "\n";
@@ -47,14 +47,14 @@ void TstTleBlocks::multipleBlocks()
     QCOMPARE(blocks[1].name, QString("SAT-B"));
 }
 
-void TstTleBlocks::twoLineOnly()
+void TstTleBatchParser::twoLineOnly()
 {
     const auto blocks = parseTleBlocks(L1 + "\n" + L2 + "\n");
     QCOMPARE(blocks.size(), 1);
     QVERIFY(blocks[0].name.isEmpty());
 }
 
-void TstTleBlocks::nameLikeLinesAreNotTle()
+void TstTleBatchParser::nameLikeLinesAreNotTle()
 {
     // 以 "1" 开头的名称行/标题不得被误判为 TLE 行 1
     const QString text = "1U CUBESAT-X\n" + L1 + "\n" + L2 + "\n"
@@ -65,7 +65,7 @@ void TstTleBlocks::nameLikeLinesAreNotTle()
     QCOMPARE(blocks[0].name, QString("1U CUBESAT-X"));
 }
 
-void TstTleBlocks::shortLinesIgnored()
+void TstTleBatchParser::shortLinesIgnored()
 {
     // 长度不足 69 的 "1 xxx" 行不能作为 TLE 行（行 2 到来时无行 1 → 丢弃）
     const QString text = "1 bad short line\n2 bad short line\n" + L1 + "\n" + L2 + "\n";
@@ -74,17 +74,17 @@ void TstTleBlocks::shortLinesIgnored()
     QCOMPARE(blocks[0].line1, L1);
 }
 
-void TstTleBlocks::emptyAndGarbageInput()
+void TstTleBatchParser::emptyAndGarbageInput()
 {
     QVERIFY(parseTleBlocks(QString()).isEmpty());
     QVERIFY(parseTleBlocks(QString("\n\n   \n")).isEmpty());
     QVERIFY(parseTleBlocks(QString("随便一段文字\n没有 TLE\n")).isEmpty());
 }
 
-int runTstTleBlocks(int argc, char *argv[])
+int runTstTleBatchParser(int argc, char *argv[])
 {
-    TstTleBlocks t;
+    TstTleBatchParser t;
     return QTest::qExec(&t, argc, argv);
 }
 
-#include "tst_tleblocks.moc"
+#include "tst_tlebatchparser.moc"

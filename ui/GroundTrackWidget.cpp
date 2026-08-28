@@ -2,7 +2,7 @@
 // GroundTrackWidget.cpp — 地面轨迹图实现
 // =============================================================================
 #include "GroundTrackWidget.h"
-#include "CatmullRom.h"
+#include "CatmullRomSpline.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QFile>
@@ -103,13 +103,13 @@ QPainterPath GroundTrackWidget::buildTrackPath(const PassEvent &p,
                 const double dlon = std::abs(p.samples[k].geo.lonDeg
                                              - p.samples[k - 1].geo.lonDeg);
                 if (dlon > 180.0) {       // 跨经线: 断开
-                    trackPath.addPath(CatmullRom::path(seg));
+                    trackPath.addPath(CatmullRomSpline::path(seg));
                     seg.clear();
                 }
             }
             seg.append(screenPt(p.samples[k]));
         }
-        trackPath.addPath(CatmullRom::path(seg));
+        trackPath.addPath(CatmullRomSpline::path(seg));
     } else {
         // 回退: AOS → TCA → LOS 二次贝塞尔近似（无采样数据时）
         trackPath.moveTo(geoToScreen(p.aosSatGeo.latDeg, p.aosSatGeo.lonDeg, x0, y0, sx, sy));

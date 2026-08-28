@@ -1,7 +1,7 @@
 // =============================================================================
-// Magnitude.cpp — 星等估算实现
+// VisualMagnitude.cpp — 星等估算实现
 // =============================================================================
-#include "Magnitude.h"
+#include "VisualMagnitude.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -50,7 +50,7 @@ const StdMagEntry kCatalog[] = {
 
 } // namespace
 
-double MagnitudeCalc::standardMagnitude(const std::string &satName, double fallback)
+double VisualMagnitudeCalc::standardMagnitude(const std::string &satName, double fallback)
 {
     if (satName.empty()) return fallback;
     // 大小写不敏感匹配（TLE 名称可能是 "starlink 1234" 等混写变体）
@@ -77,7 +77,7 @@ double MagnitudeCalc::standardMagnitude(const std::string &satName, double fallb
     return fallback;
 }
 
-double MagnitudeCalc::phaseAngleRad(const std::array<double, 3> &satEcefKm,
+double VisualMagnitudeCalc::phaseAngleRad(const std::array<double, 3> &satEcefKm,
                                     const std::array<double, 3> &sunEcefKm,
                                     const std::array<double, 3> &obsEcefKm)
 {
@@ -97,7 +97,7 @@ double MagnitudeCalc::phaseAngleRad(const std::array<double, 3> &satEcefKm,
     return std::acos(dot);
 }
 
-double MagnitudeCalc::visualMagnitude(double stdMag, double rangeKm, double phaseRad)
+double VisualMagnitudeCalc::visualMagnitude(double stdMag, double rangeKm, double phaseRad)
 {
     // Vallerie 1963: m = m₀ − 15 + 5·log10(R) − 2.5·log10(f(B))
     // f(B) = (sin B + (π − B)·cos B)/π: B=0 → 1（满相位），B=π → 0（背日）

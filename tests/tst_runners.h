@@ -5,14 +5,14 @@
 #define TESTS_TST_RUNNERS_H
 
 int runTstTleParser(int argc, char *argv[]);
-int runTstTleBlocks(int argc, char *argv[]);
+int runTstTleBatchParser(int argc, char *argv[]);
 int runTstCoordTransform(int argc, char *argv[]);
 int runTstSunPosition(int argc, char *argv[]);
 int runTstNutation(int argc, char *argv[]);
 int runTstEarthShadow(int argc, char *argv[]);
 int runTstPropagator(int argc, char *argv[]);
 int runTstOrbitCalc(int argc, char *argv[]);
-int runTstMagnitude(int argc, char *argv[]);
+int runTstVisualMagnitude(int argc, char *argv[]);
 int runTstDoppler(int argc, char *argv[]);
 int runTstErrorHandler(int argc, char *argv[]);
 int runTstPassWorker(int argc, char *argv[]);

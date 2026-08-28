@@ -7,7 +7,7 @@
 #include <QWidget>
 #include <QVector>
 #include <QPainterPath>
-#include "core/models.h"
+#include "core/DataTypes.h"
 
 class PolarPlotWidget : public QWidget {
     Q_OBJECT
