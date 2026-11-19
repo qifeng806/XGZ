@@ -25,20 +25,13 @@ docs/
 测试覆盖改进报告.md
 原子操作修复报告.md
 
-# tests/ 子代理草稿与构建产物
-tests/CMakeLists.txt
-tests/README.md
-
 # 构建产物与运行日志
 release/
-tests/release/
 debug/
-tests/debug/
 Makefile
 Makefile.Release
 Makefile.Debug
 .qmake.stash
-tests/.qmake.stash
 .qtcreator/
 target_wrapper.bat
 run_*.txt

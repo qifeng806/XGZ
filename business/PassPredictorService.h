@@ -41,10 +41,6 @@ public:
 signals:
     void resultReady(QVector<PassEvent> passes);
     void errorOccurred(QString message);
-    // TLE 校验和警告: 非致命（解析成功, 继续计算）。独立信号通道——
-    // 若复用 errorOccurred 会被 UI 当作失败计数入汇总列表（批量把成功
-    // 卫星误列"预报失败"）、单星路径弹出时机错误的模态框
-    void checksumWarning(QString satelliteId);
     void batchProgress(int completed, int total);
     void metaInfo(QString model, QString epochUtc, double ageDays);
 
@@ -53,6 +49,7 @@ private:
         QThread *thread = nullptr;
         std::shared_ptr<PassPredictWorker> worker;   // 使用 shared_ptr 管理worker生命周期
         qint64 createTime = 0;                         // 创建时间，用于孤儿线程回收策略
+        int reapCount = 0;                             // 孤儿重试次数（超限时强制移除）
     };
     QVector<ActiveJob> m_activeJobs;
 

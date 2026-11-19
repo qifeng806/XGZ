@@ -5,6 +5,7 @@
 #include <QThread>
 #include <QTimer>
 #include <algorithm>
+#include <limits>
 
 PassPredictorService::PassPredictorService(QObject *parent)
     : QObject(parent), m_batchCompleted(0), m_batchSeq(0), m_batchFinished(false) {}
@@ -16,27 +17,14 @@ PassPredictorService::~PassPredictorService()
     // 进程退出时由系统回收，绝不在主线程无限阻塞。
     cleanupAll(2000);
 
-    // 孤儿线程兜底: 析构子对象前必须回收或解除父子关系，
-    // 否则 QThread 仍在运行时析构会触发未定义行为
+    // 孤儿线程兜底: cleanupAll 已连接 finished→deleteLater 且调用过 cancel，
+    // 此处不再冗余 quit/wait/deleteLater —— 仅解除父子关系避免析构 UB
     m_reapTimer.reset();
-    
-    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 2000;
     for (auto &aj : m_orphans) {
         QThread *t = aj.thread;
         if (!t) continue;
-        
-        // 先尝试协作退出
-        t->quit();
-        int remaining = static_cast<int>(deadline - QDateTime::currentMSecsSinceEpoch());
-        if (remaining > 0 && t->wait(remaining)) {
-            // 正常退出，安全删除
-            t->deleteLater();
-        } else {
-            // 超时或未响应：强制解除父子关系，避免析构时的未定义行为
-            t->setParent(nullptr);
-            // worker 由 shared_ptr 自动管理，无需手动删除
-            aj.worker.reset();
-        }
+        t->setParent(nullptr);
+        aj.worker.reset();
         aj.thread = nullptr;
     }
     m_orphans.clear();
@@ -77,20 +65,13 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
                 if (seq != m_batchSeq) return;
                 emit errorOccurred(msg);
             });
-    // 被自动恢复策略跳过（如 WARNING 级校验和错误）: 单星模式必须告知用户,
+    // 被自动恢复策略跳过（WARNING 级告警走跳过路径）: 单星模式必须告知用户,
     // 否则"计算中"状态永不结束
     connect(worker.get(), &PassPredictWorker::jobSkipped, this,
             [this, seq](QString satelliteId, QString reason) {
                 if (seq != m_batchSeq) return;
                 emit errorOccurred(QString("卫星 %1 已跳过: %2")
                                        .arg(satelliteId, reason));
-            });
-    // 校验和警告: 非致命继续, 不计数不跳过——独立信号直通 UI 状态栏
-    //（不得复用 errorOccurred: 批量会误入失败汇总, 单星会错误弹窗）
-    connect(worker.get(), &PassPredictWorker::checksumWarning, this,
-            [this, seq](QString satelliteId) {
-                if (seq != m_batchSeq) return;
-                emit checksumWarning(satelliteId);
             });
     connect(worker.get(), &PassPredictWorker::metaInfo, this,
             [this, seq](QString model, QString epochUtc, double ageDays) {
@@ -104,8 +85,15 @@ void PassPredictorService::startJob(const PassPredictWorker::Job &job)
     connect(thread, &QThread::started, worker.get(), [worker, job]() {
         worker->run(job);
     });
-    // QThread::start 返回 void: 线程创建失败时 Qt 内部致命退出，不会静默失败
+    // QThread::start() 返回 void, 但**并非**不会失败: 底层线程创建失败时 Qt 只
+    // 置 running=false 并发一次 finished()（进程不受影响），此后本任务不再产生
+    // 任何 worker 信号 → UI 永久停在"计算中"。这里显式检测并复位。
     thread->start();
+    if (!thread->isRunning()) {
+        // 立即回收残留 ActiveJob, 避免用户连续失败多次时槽位累积
+        emit errorOccurred("无法创建计算线程，任务未启动");
+        cleanupJob(m_activeJobs.last(), 2000);
+    }
 }
 
 void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &jobs)
@@ -129,7 +117,7 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         // 预分配: PassEvent 含 std::vector<PassSample>, QVector 扩容重分配会对
         // 存量元素整体深拷贝(非共享), 千颗级批量下是 O(n²) 开销
         // 16 倍: 低轨 168h 窗口单星可达 100+ 过境, 4 倍预估偏小
-        m_batchPasses.reserve(qMin<qsizetype>(m_batchTotal * 16, 400000));
+        m_batchPasses.reserve(qMin<qsizetype>(static_cast<qint64>(m_batchTotal) * 16, 400000));
     }
 
     // 固定大小 worker 池（H2 修复）: 逐颗建线程在 starlink/active 等大组
@@ -154,16 +142,18 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                 [this, seq](QVector<PassEvent> passes) {
                     if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
                     
-                    QMutexLocker locker(&m_batchMutex);
-                    // std::move: PassEvent 含采样向量, 拷贝即整段深拷贝,
-                    // 千颗级大组下这是纯开销
-                    m_batchPasses.append(std::move(passes));
-                    int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
-                    emit batchProgress(completed, m_batchTotal);
-                    if (completed == m_batchTotal) {
-                        locker.unlock();  // 在调用 finishBatch 前解锁
-                        finishBatch();
+                    bool batchDone = false;
+                    {
+                        QMutexLocker locker(&m_batchMutex);
+                        m_batchPasses.append(std::move(passes));
+                        int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
+                        // 用 >= 而非 ==: 一旦出现重复计数（如同一任务在
+                        // emit 分配阶段抛 bad_alloc 后由 catch 再补发一次），
+                        // == 会永久错失相等点 → resultReady 永不发出（批量悬挂）
+                        batchDone = (completed >= m_batchTotal);
                     }
+                    emit batchProgress(m_batchCompleted.loadAcquire(), m_batchTotal);
+                    if (batchDone) finishBatch();
                 });
 
         // 失败: 转发错误并计数（否则批量永远等不到完成 → 悬挂）
@@ -171,39 +161,39 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
                 [this, seq](QString msg) {
                     if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
                     
-                    QMutexLocker locker(&m_batchMutex);
-                    int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
-                    emit batchProgress(completed, m_batchTotal);
-                    emit errorOccurred(msg);
-                    if (completed == m_batchTotal) {
-                        locker.unlock();  // 在调用 finishBatch 前解锁
-                        finishBatch();
+                    bool batchDone = false;
+                    {
+                        QMutexLocker locker(&m_batchMutex);
+                        int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
+                        // 用 >= 而非 ==: 一旦出现重复计数（如同一任务在
+                        // emit 分配阶段抛 bad_alloc 后由 catch 再补发一次），
+                        // == 会永久错失相等点 → resultReady 永不发出（批量悬挂）
+                        batchDone = (completed >= m_batchTotal);
                     }
+                    emit batchProgress(m_batchCompleted.loadAcquire(), m_batchTotal);
+                    emit errorOccurred(msg);
+                    if (batchDone) finishBatch();
                 });
 
-        // 被自动恢复策略跳过（如 WARNING 级校验和错误）: 不报错但必须计数,
+        // 被自动恢复策略跳过（WARNING 级告警走跳过路径）: 不报错但必须计数,
         // 否则 completed 永远 < total → resultReady 永不发出（批量悬挂）
         connect(worker.get(), &PassPredictWorker::jobSkipped, this,
                 [this, seq](QString satelliteId, QString reason) {
                     if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
                     
-                    QMutexLocker locker(&m_batchMutex);
-                    int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
-                    emit batchProgress(completed, m_batchTotal);
+                    bool batchDone = false;
+                    {
+                        QMutexLocker locker(&m_batchMutex);
+                        int completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
+                        // 用 >= 而非 ==: 一旦出现重复计数（如同一任务在
+                        // emit 分配阶段抛 bad_alloc 后由 catch 再补发一次），
+                        // == 会永久错失相等点 → resultReady 永不发出（批量悬挂）
+                        batchDone = (completed >= m_batchTotal);
+                    }
+                    emit batchProgress(m_batchCompleted.loadAcquire(), m_batchTotal);
                     emit errorOccurred(QString("卫星 %1 已跳过: %2")
                                            .arg(satelliteId, reason));
-                    if (completed == m_batchTotal) {
-                        locker.unlock();  // 在调用 finishBatch 前解锁
-                        finishBatch();
-                    }
-                });
-
-        // 校验和警告: 非致命继续, 不计数不跳过（completed 由 resultReady
-        // 正常结算）——独立信号直通 UI 状态栏, 不得混入失败汇总
-        connect(worker.get(), &PassPredictWorker::checksumWarning, this,
-                [this, seq](QString satelliteId) {
-                    if (seq != m_batchSeq) return;   // 旧批次迟到信号: 丢弃
-                    emit checksumWarning(satelliteId);
+                    if (batchDone) finishBatch();
                 });
 
         connect(worker.get(), &PassPredictWorker::resultReady, thread, &QThread::quit);
@@ -227,8 +217,22 @@ void PassPredictorService::startBatch(const QVector<PassPredictWorker::Job> &job
         connect(thread, &QThread::started, worker.get(), [worker, slice]() {
             worker->runJobs(slice);
         });
-        // QThread::start 返回 void: 线程创建失败时 Qt 内部致命退出，不会静默失败
+        // 同上: start() 失败时本切片既不会 resultReady 也不会 errorOccurred/
+        // jobSkipped, completed 永不达 total → 批量永久悬挂（进度条卡住）。
+        // 按"整片失败"一次性补计数并在最后一片时正常收尾。
         thread->start();
+        if (!thread->isRunning() && seq == m_batchSeq) {   // 已取消则不补计数
+            const int n = slice.size();
+            int completed = 0;
+            {
+                QMutexLocker locker(&m_batchMutex);
+                for (int k = 0; k < n; ++k)
+                    completed = m_batchCompleted.fetchAndAddRelaxed(1) + 1;
+            }
+            emit batchProgress(m_batchCompleted.loadAcquire(), m_batchTotal);
+            emit errorOccurred(QString("无法创建计算线程，%1 颗卫星未执行").arg(n));
+            if (completed >= m_batchTotal) finishBatch();
+        }
     }
 }
 
@@ -251,10 +255,8 @@ void PassPredictorService::finishBatch()
         m_batchFinished = true;   // 收尾: 迟到的单星 metaInfo 不再转发
     }
     
-    // emit 前先移动到临时量: 信号参数按值接收, 直接 emit 成员会深拷贝
-    // 整批采样向量; 移动后主线程交付只剩队列转发那一份必要拷贝
-    QVector<PassEvent> out = std::move(batchCopy);
-    emit resultReady(std::move(out));
+    // emit 按值接收: 移动后主线程交付只剩队列转发那一份必要拷贝
+    emit resultReady(std::move(batchCopy));
 }
 
 void PassPredictorService::cancelAll()
@@ -266,6 +268,14 @@ void PassPredictorService::cancelAll()
         if (aj.worker) {
             aj.worker->cancel();   // 协作式取消，线程会快速自然退出
         }
+    }
+    // 立即释放已累积的批量结果: 取消后这些过境不会再被交付（seq 守卫全部丢弃）,
+    // 若留到下次 startBatch 才 clear, 期间最多 400000 条 PassEvent（长窗口大组
+    // 可达数百 MB）会一直驻留。finishBatch 已 move 走内容时此处为空操作。
+    {
+        QMutexLocker locker(&m_batchMutex);
+        m_batchPasses.clear();
+        m_batchPasses.squeeze();
     }
 }
 
@@ -287,13 +297,17 @@ bool PassPredictorService::cleanupJob(ActiveJob &aj, int waitTimeoutMs)
         aj.thread->quit();
         bool exited = (waitTimeoutMs > 0)
             ? aj.thread->wait(waitTimeoutMs)
-            : aj.thread->wait();
+            : aj.thread->wait();   // ≤0: 无限等待（与头文件契约一致）
             
         if (!exited) {
             // 超时: 线程仍在运行（极端情况）。不等了——
             // 移入孤儿列表交给后台定时器二次回收（进程存活期间最终
             // 全部回收成功），而不是永久泄漏或即使执行 delete 正在运行
             // 的 QThread（未定义行为）。
+            // 连接 finished→deleteLater: 线程自然退出后自动回收，防止
+            // reapCount 超限后 removeAt 移除条目但 QThread 对象泄漏
+            QObject::connect(aj.thread, &QThread::finished,
+                             aj.thread, &QObject::deleteLater);
             m_orphans.append({aj.thread, aj.worker, QDateTime::currentMSecsSinceEpoch()});
             startReapTimer();
             return false;
@@ -329,25 +343,46 @@ void PassPredictorService::cleanupAll(int waitTimeoutMs)
     // 先取消，给线程时间自然退出
     cancelAll();
     // 全局截止时间（M7）: 避免逐线程串行等待在任务多时总时长 N×timeout。
-    // 所有线程共享同一剩余时间预算，超时后后续线程仅试探性等待（立即返回）。
-    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + waitTimeoutMs;
+    // 所有线程共享同一剩余时间预算，超时后后续线程移入孤儿列表由定时器回收。
+    // waitTimeoutMs<=0 表示无限等待: 不设全局截止时间, 逐线程 wait(-1)
+    const qint64 deadline = (waitTimeoutMs > 0)
+        ? QDateTime::currentMSecsSinceEpoch() + waitTimeoutMs
+        : std::numeric_limits<qint64>::max();
     for (auto &aj : m_activeJobs) {
         int remaining = waitTimeoutMs;
         if (waitTimeoutMs > 0) {
             remaining = static_cast<int>(
                 deadline - QDateTime::currentMSecsSinceEpoch());
-            if (remaining <= 0)
-                remaining = 0;   // 已超时: 仅试探性等待（wait(0) 立即返回）
+        } else {
+            remaining = std::numeric_limits<int>::max();  // 无限等待: cleanupJob 内部 wait(INT_MAX)
         }
-        cleanupJob(aj, remaining);
+        if (remaining > 0) {
+            cleanupJob(aj, remaining);
+        } else if (aj.thread && aj.thread->isRunning()) {
+            // 预算耗尽: 移入孤儿列表由 reapOrphans 回收，避免 wait(0) 无限阻塞
+            QObject::connect(aj.thread, &QThread::finished,
+                             aj.thread, &QObject::deleteLater);
+            m_orphans.append({aj.thread, aj.worker,
+                              QDateTime::currentMSecsSinceEpoch()});
+            aj.thread = nullptr;
+            aj.worker.reset();
+        } else if (aj.thread && !aj.thread->isRunning()) {
+            // 预算耗尽但线程已自然结束: 直接清理，避免资源泄漏
+            aj.thread->deleteLater();
+            aj.thread = nullptr;
+            aj.worker.reset();
+        }
     }
+    // 仅在确有孤儿时启动回收定时器: reapOrphans() 在空表时早退（早退分支在
+    // 停表逻辑之前），无条件启动会让 500 ms 周期定时器一直空跑到进程退出
+    if (!m_orphans.isEmpty()) startReapTimer();
     m_activeJobs.clear();
 }
 
 void PassPredictorService::startReapTimer()
 {
     if (m_reapTimer) return;   // 已在运行
-    m_reapTimer = std::make_unique<QTimer>(this);
+    m_reapTimer = std::make_unique<QTimer>(nullptr);  // 不设 parent，避免与 unique_ptr 双重所有
     m_reapTimer->setInterval(500);  // 缩短间隔，提高响应速度
     connect(m_reapTimer.get(), &QTimer::timeout, this, &PassPredictorService::reapOrphans);
     m_reapTimer->start();
@@ -357,67 +392,61 @@ void PassPredictorService::reapOrphans()
 {
     if (m_orphans.isEmpty()) return;
     
-    // 按创建时间排序，优先处理旧的孤儿线程
-    std::sort(m_orphans.begin(), m_orphans.end(),
-        [](const ActiveJob &a, const ActiveJob &b) {
-            return a.createTime < b.createTime;
-        });
-    
-    for (int i = m_orphans.size() - 1; i >= 0; --i) {
+    // 每次 tick 只处理一个孤儿，避免多个孤儿累积 wait() 阻塞主线程
+    for (int i = 0; i < m_orphans.size(); ++i) {
         ActiveJob &aj = m_orphans[i];
         QThread *t = aj.thread;
         
         if (!t) {
-            // 无效条目，清理
             aj.worker.reset();
             m_orphans.removeAt(i);
-            continue;
+            break;
         }
         
         if (!t->isRunning()) {
-            // 已自然退出（或已回收）: 补 deleteLater（finished→worker 删除
-            // 已由线程内连接完成），线程对象由主线程事件循环删除
             t->deleteLater();
             aj.thread = nullptr;
             aj.worker.reset();
             m_orphans.removeAt(i);
-            continue;
+            break;
         }
         
-        // 尝试协作退出
         t->quit();
         
-        // 根据线程年龄调整等待时间：新线程给更多时间，旧线程更快放弃
         qint64 age = QDateTime::currentMSecsSinceEpoch() - aj.createTime;
-        int waitTime = qMin(200, qMax(50, 200 - static_cast<int>(age / 1000)));
+        const int waitTime = 50;
         
         if (t->wait(waitTime)) {
-            // 正常退出，安全删除
             t->deleteLater();
             aj.thread = nullptr;
             aj.worker.reset();
             m_orphans.removeAt(i);
-        } else if (age > 10000) {  // 10秒以上的线程强制解除父子关系
-            // 超龄孤儿（通常因 jobSkipped 旧缺陷驻留或极端卡死）:
-            // 线程仍在运行, 任何删除都是未定义行为——仅解除父子关系避免
-            // 析构等待, 保留在列表持续复查, 待线程自然结束后由上方
-            // isRunning()==false 分支补 deleteLater 回收（不泄漏对象）
+        } else if (age > 10000) {
             t->setParent(nullptr);
-            aj.worker.reset();  // 清理worker引用
-            aj.createTime = QDateTime::currentMSecsSinceEpoch();  // 重置计时
-            // 不从列表中移除（复查继续, 线程结束后回收）
+            aj.worker.reset();
+            aj.createTime = QDateTime::currentMSecsSinceEpoch();
+            ++aj.reapCount;
+            if (aj.reapCount >= 5) {
+                qWarning() << "reapOrphans: orphan" << aj.thread
+                           << "exceeded max retries, removing";
+                m_orphans.removeAt(i);
+            }
         }
-        // 仍未退出但时间较短，保留待下一轮
+        break;  // 每次 tick 仅处理一个
     }
     
     // 如果所有孤儿都已处理，停止定时器
     if (m_orphans.isEmpty() && m_reapTimer) {
         // 槽内不销毁发送者 QTimer（Qt6 COW 通常安全非保证）:
-        // 延迟到下一轮事件循环收尾
+        // 延迟到下一轮事件循环收尾。
+        // 用 release()+deleteLater()（而非 reset() 里直接 delete）: 该延迟
+        // 回调可能被随后的模态弹窗打开的**嵌套事件循环**提前执行, 而那正是
+        // QTimer::timeout 的发射栈——deleteLater 的 DeferredDelete 事件不会被
+        // 内层事件循环投递（与 TleFetcher::onReplyFinished 的看门狗同一处理）
         QTimer::singleShot(0, this, [this]() {
             if (m_orphans.isEmpty() && m_reapTimer) {
                 m_reapTimer->stop();   // 全部回收完毕 → 停表省电
-                m_reapTimer.reset();
+                m_reapTimer.release()->deleteLater();
             }
         });
     }

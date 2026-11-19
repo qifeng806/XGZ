@@ -67,10 +67,13 @@ std::optional<SunPosition> SunPositionCalc::compute(const double jdUtc,
                            - 0.0001537 * (T * 10.0) * (T * 10.0));
         M = wrap2Pi(M);
 
-        // ---- Step 4: 中心差 ----
+        // ---- Step 4: 中心差（高精度6项，Meeus 25.9，精度 ~0.001°） ----
         double C = deg2rad((1.914602 - 0.004817 * (T * 10.0) - 0.000014 * (T * 10.0) * (T * 10.0)) * std::sin(M)
                          + (0.019993 - 0.000101 * (T * 10.0)) * std::sin(2.0 * M)
-                         + 0.000289 * std::sin(3.0 * M));
+                         + 0.000289 * std::sin(3.0 * M)
+                         + 0.000005 * std::sin(4.0 * M)
+                         + 0.000003 * std::sin(5.0 * M)
+                         + 0.000002 * std::sin(6.0 * M));
 
         // ---- Step 5: 太阳视黄经 λ ----
         // 几何黄经 λ_geo = L0 + C（平均轨道项）
@@ -79,12 +82,22 @@ std::optional<SunPosition> SunPositionCalc::compute(const double jdUtc,
         // 光行差 −20.4898″/R（Meeus 25.9，R 为日地距离 AU，见 Step 8）
         // 章动 Δψ（Meeus 表 22.A 完整 63 项级数，精度 0.5″）
         const double distAU = 1.00014 - 0.01671 * std::cos(M)
-                            - 0.00014 * std::cos(2.0 * M);
+                            - 0.00014 * std::cos(2.0 * M)
+                            - 0.000003 * std::cos(3.0 * M);  // 高精度R³项
         if (!std::isfinite(distAU) || distAU <= 0.0) {
             throw std::invalid_argument("日地距离计算结果无效");
         }
         
         const double dPsi = Nutation::compute(jdTT).dPsi;
+        // 视黄经 = 几何黄经 + 章动 Δψ − 光行差
+        //
+        // 注意（回归修复）: Meeus 25 章低精度式的经验式
+        //   λ = Θ − 0.00569° − 0.00478·sinΩ
+        // 中那两个常数项分别是**光行差**（0.00569° = 20.5″ ≈ 20.4898″）与
+        // **章动的近似值**（0.00478° = 17.2″ = 主项 Δψ 振幅）。本实现已用
+        // 63 项完整 Δψ 与 −20.4898″/R 的精确光行差，故二者**都不可再加**——
+        // 同时保留会把章动与光行差各算两遍（合计 ~0.01° 量级的太阳位置偏差）。
+        // FK5 修正（−0.09033″ ≈ 2.5e-5°）量级过小，此处省略
         lambda = wrap2Pi(lambda + dPsi - deg2rad(20.4898 / 3600.0 / distAU));
 
         // ---- Step 6: 真黄赤交角 ε = ε0 + Δε ----
@@ -129,10 +142,13 @@ std::optional<SunPosition> SunPositionCalc::compute(const double jdUtc,
         };
 
         // ---- Step 10: 赤道 → 地平（观测站） ----
-        // 时角用 UT1 时标的 GMST；UT1 ≈ UTC（≤ 0.9s），直接用 UTC 儒略日，
-        // 不再加 ΔT（ΔT 仅用于上方 TT 时标的太阳历表）
-        double gmstRad = CoordTransform::gmstRad(jdUtc);
-        double lha = gmstRad + obsLon - ra;  // 地方时角
+        // 时角须配**视恒星时（GAST）**：上方 ra 已含章动（视赤经），若用 GMST
+        // 会漏掉春分点方程 EE ≈ Δψ·cos ε（最大 ~15.8″ ≈ 0.0044°）。
+        // EE 用标准一阶式 Δψ·cos(ε_true)（忽略 <0.002″ 的补充项）;
+        // GMST 输入为 UT1 儒略日（UT1 ≈ UTC ≤ 0.9s），不加 ΔT
+        const double gastRad = CoordTransform::gmstRad(jdUtc) + dPsi * std::cos(eps);
+        if (!std::isfinite(gastRad)) return std::nullopt;  // GMST 失败 → 太阳位置无法计算
+        double lha = gastRad + obsLon - ra;  // 地方时角
         lha = wrap2Pi(lha);
 
         double sinAlt = std::sin(obsLat) * std::sin(dec)
@@ -154,9 +170,10 @@ std::optional<SunPosition> SunPositionCalc::compute(const double jdUtc,
         // 方位角在两类退化位置下无物理意义且数值会任意跳变:
         // 1) 太阳在天顶/天底 (|alt|≈±90°)  2) 观测站在极点 (|lat|≈±90°)
         // → 稳定钳制为 0°（北），避免极区时段内方位角无意义的抖动
+        constexpr double kPolarThresholdDeg = 89.9;
         const double absAltDeg  = std::abs(rad2deg(alt));
         const double absLatDeg  = std::abs(rad2deg(obsLat));
-        if (absAltDeg >= 89.9 || absLatDeg >= 89.9) az = 0.0;
+        if (absAltDeg >= kPolarThresholdDeg || absLatDeg >= kPolarThresholdDeg) az = 0.0;
 
         sp.azDeg  = rad2deg(az);     // 北=0°, 顺时针
         sp.altDeg = rad2deg(alt);    // 地平=0°

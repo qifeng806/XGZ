@@ -13,6 +13,9 @@
 #include <chrono>
 #include <QDebug>
 
+// 毫秒/天换算常量
+static constexpr double kMsPerDay = 86400000.0;
+
 PassPredictWorker::PassPredictWorker(QObject *parent)
     : QObject(parent), m_cancelFlag(makeAtomicCancelFlag()) {}
 
@@ -109,41 +112,49 @@ void PassPredictWorker::runOneJob(const Job &job)
             suggestion = "请检查TLE格式，确保行号正确";
             break;
         }
-        case TleParser::ParseError::CHECKSUM_FAILED: {
-            bool line1Valid = TleParser::verifyChecksum(job.tleLine1.toStdString());
-            bool line2Valid = TleParser::verifyChecksum(job.tleLine2.toStdString());
-            details = QString("校验和错误: 行1 %1, 行2 %2").arg(line1Valid ? "通过" : "失败").arg(line2Valid ? "通过" : "失败");
-            suggestion = "校验和错误可能影响计算精度，建议使用正确的TLE数据";
+        case TleParser::ParseError::BAD_FORMAT: {
+            // STK 的 TLE Validator（本机 _Default.ap: Validator = On）会拦下
+            // 列错位/小数点错位/数字列非数字等"可能被误读"的输入。
+            // detail 里已带具体列号, 用户可精确定位
+            details = QString("TLE 列格式不符: %1\n"
+                              "（本程序按 STK 11 的定列读取规则解析 69 列定宽 TLE）")
+                .arg(QString::fromStdString(parseErr.detail));
+            suggestion = "请确认 TLE 为 69 列定宽格式（列对齐、隐含小数点、空列留空），"
+                         "勿手工改动列位置";
             break;
         }
         case TleParser::ParseError::BAD_NORAD: {
             QString noradStr = job.tleLine1.mid(2, 5);
-            details = QString("无效的NORAD编号: '%1'").arg(noradStr);
-            suggestion = "请检查NORAD编号格式，应为5位数字";
+            details = QString("无效的编目号（列3-7）: '%1' —— %2")
+                .arg(noradStr, QString::fromStdString(parseErr.detail));
+            suggestion = "请检查编目号列（行1/行2 列3-7），两行必须一致";
             break;
         }
         case TleParser::ParseError::BAD_EPOCH: {
             QString epochStr = job.tleLine1.mid(18, 14);
-            details = QString("无效的历元格式: '%1'").arg(epochStr);
-            suggestion = "请检查历元时间格式，应为YYDDD.DDDDDDDD格式";
+            details = QString("无效的历元（列19-32）: '%1' —— %2")
+                .arg(epochStr, QString::fromStdString(parseErr.detail));
+            suggestion = "请检查历元格式，应为 YYDDD.DDDDDDDD（8 位小数）";
             break;
         }
         case TleParser::ParseError::BAD_ELEMENTS: {
-            details = "轨道根数越界，可能原因：倾角不在[0°,180°]范围内，偏心率≥1，或平运动非正数";
-            suggestion = "请检查轨道参数是否在合理范围内";
+            details = QString("轨道根数非法: %1")
+                .arg(QString::fromStdString(parseErr.detail));
+            suggestion = "请检查行2 各根数列: 倾角 0~180°、RAAN/近地点辐角/平近点角 "
+                         "0~360°、平运动 ≤17.0、偏心率 7 位数字";
             break;
         }
         case TleParser::ParseError::BAD_BS: {
             QString bstarStr = job.tleLine1.mid(53, 8);
-            details = QString("B*格式错误: '%1'").arg(bstarStr);
-            suggestion = "请检查B*阻力项格式，应为SmmmmmmEE格式";
+            details = QString("B* 格式错误（列54-61）: '%1' —— %2")
+                .arg(bstarStr, QString::fromStdString(parseErr.detail));
+            suggestion = "请检查 B* 阻力项格式，应为 Smmmmm±E（隐含小数点）";
             break;
         }
-        case TleParser::ParseError::DECAYED: {
-            details = "卫星已再入大气层，轨道已失效";
-            suggestion = "请使用更新的TLE数据，或检查卫星状态";
-            break;
-        }
+        // 注: 此处曾有 case DECAYED 分支——但 TleParser::parse 从不产生该
+        // 错误码（再入由 perturb 在 Propagator::initialize 阶段以
+        // Sgp4Error::DECAYED 报出, 见下方 Step 2 的 errMsg 文案处理）,
+        // 属不可达死代码, 已删除
         default: {
             details = QString("未知解析错误，错误代码: %1").arg(static_cast<int>(parseErr.code));
             suggestion = "请检查TLE格式或联系技术支持";
@@ -163,7 +174,7 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 记录错误并尝试恢复
         bool recoverySuccess = ErrorHandler::instance().handleError(errorInfo);
         
-        // 恢复成功: 自动跳过该任务（如 WARNING 级校验和错误）——仍须通知调度层:
+        // 恢复成功: 自动跳过该任务（如 WARNING 级解析告警）——仍须通知调度层:
         // 批量 completed 计数靠信号驱动, 缺失会让 resultReady 永不发出（悬挂）;
         // 单星模式 UI 也会永久停留在"计算中"
         if (recoverySuccess) {
@@ -177,13 +188,6 @@ void PassPredictWorker::runOneJob(const Job &job)
     }
 
     const auto &tle = *tleOpt;
-
-    // 校验和未通过: 解析成功（非致命继续计算）, 但必须让用户感知坏数据
-    //（否则 WARNING 告警路径 CHECKSUM_FAILED 从未执行——静默无感）。
-    // 独立信号: 不计数、不跳过, 由 service 转发为 errorOccurred
-    if (!tle.checksumValid) {
-        emit checksumWarning(QString::fromStdString(tle.name));
-    }
     
     // 记录解析成功信息
     #ifdef QT_DEBUG
@@ -197,6 +201,9 @@ void PassPredictWorker::runOneJob(const Job &job)
         .arg(parseMs);
     #endif
 
+    // 批量取消检测: TLE 解析耗时可观, 中途取消时跳过后续传播初始化
+    if (m_cancelFlag->isCancelled()) return;
+
     // ---- Step 2: 初始化 Propagator（封装 perturb::Satellite） ----
     Propagator prop;
     std::string errMsg;
@@ -206,7 +213,8 @@ void PassPredictWorker::runOneJob(const Job &job)
     
     bool ok = prop.initialize(
         job.tleLine1.toStdString(),
-        job.tleLine2.toStdString(), errMsg);
+        job.tleLine2.toStdString(), errMsg,
+        job.calcCfg.gravityModel);
 
     if (!ok) {
         // 计算初始化耗时
@@ -280,8 +288,8 @@ void PassPredictWorker::runOneJob(const Job &job)
     // 历元 = 年首 + (epochDay − 1) 天（epochDay 含小数，UTC 时标）
     // 使用更精确的毫秒转换，避免精度损失
     const qint64 epochMs = QDateTime(QDate(tle.epochYear, 1, 1), QTime(0, 0), QTimeZone::UTC)
-        .toMSecsSinceEpoch() + static_cast<qint64>((tle.epochDay - 1.0) * 86400000.0 + 0.5);
-    double ageDays = (job.startUtc.toMSecsSinceEpoch() - epochMs) / 86400000.0;
+        .toMSecsSinceEpoch() + static_cast<qint64>((tle.epochDay - 1.0) * kMsPerDay + 0.5);
+    double ageDays = (job.startUtc.toMSecsSinceEpoch() - epochMs) / kMsPerDay;
     if (ageDays < 0.0) ageDays = 0.0;   // 未来历元（时钟/数据异常）按 0 处理
     emit metaInfo(modelStr,
                   QDateTime::fromMSecsSinceEpoch(epochMs, QTimeZone::UTC)
@@ -292,12 +300,14 @@ void PassPredictWorker::runOneJob(const Job &job)
     prop.setSatelliteName(tle.name);
 
     // ---- Step 3: 构建传播 Lambda ----
-    auto propagateFn = [&prop, this](double jd) -> std::optional<EciState> {
-        if (m_cancelFlag->isCancelled()) return std::nullopt;
+    auto cancelFlag = m_cancelFlag;  // 捕获 shared_ptr, 解耦 worker 生命周期
+    auto propagateFn = [&prop, cancelFlag](double jd) -> std::optional<EciState> {
+        if (cancelFlag->isCancelled()) return std::nullopt;
         return prop.propagate(jd);
     };
 
     // ---- Step 4: 创建 Observer ----
+    // 观测几何为纯几何仰角（与 STK AER 报告同定义, 不含大气折射）
     Observer obs(job.observerLatDeg, job.observerLonDeg,
                  job.observerAltKm, job.minElevDeg);
 
@@ -307,7 +317,7 @@ void PassPredictWorker::runOneJob(const Job &job)
 
     // QDateTime(UTC) → double JD
     // 使用更高精度的转换，避免精度损失
-    double jdStart = (job.startUtc.toMSecsSinceEpoch() / 86400000.0) + 2440587.5;
+    double jdStart = (job.startUtc.toMSecsSinceEpoch() / kMsPerDay) + 2440587.5;
     
     // 记录计算开始时间
     auto calcStartTime = std::chrono::steady_clock::now();
@@ -316,7 +326,10 @@ void PassPredictWorker::runOneJob(const Job &job)
     try {
         passes = calc.predict(propagateFn, obs, jdStart, job.hoursAhead, m_cancelFlag);
 
-        if (m_cancelFlag->isCancelled()) return;
+        if (m_cancelFlag->isCancelled()) {
+            emit jobSkipped(QString::fromStdString(tle.name), "计算被取消");
+            return;
+        }
         
         // 计算总耗时
         #ifdef QT_DEBUG
@@ -347,15 +360,31 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 使用错误处理系统记录轨道计算错误
         QString details = QString("轨道计算失败: %1").arg(QString::fromUtf8(e.what()));
         QString suggestion;
-        
-        if (QString(e.what()).contains("传播")) {
-            suggestion = "检查TLE数据时效性，或使用更新的TLE";
-        } else if (QString(e.what()).contains("数值") || QString(e.what()).contains("范围")) {
-            suggestion = "检查观测站坐标和仰角阈值是否合理";
-        } else if (QString(e.what()).contains("时间")) {
-            suggestion = "缩短预测时间窗口，或检查起始时间设置";
-        } else if (QString(e.what()).contains("内存") || QString(e.what()).contains("溢出")) {
-            suggestion = "减少同时计算的卫星数量，或缩短预测时间";
+
+        // 优先用异常类型分类（不依赖消息文本语言/措辞）
+        if (dynamic_cast<const std::bad_alloc *>(&e)) {
+            suggestion = "系统内存不足；减少同时计算的卫星数量或缩短预测时间窗口";
+        } else if (dynamic_cast<const std::overflow_error *>(&e)) {
+            suggestion = "数值溢出；检查观测站坐标和仰角阈值是否合理";
+        } else if (dynamic_cast<const std::underflow_error *>(&e)) {
+            suggestion = "数值下溢；检查时间步长设置";
+        } else if (dynamic_cast<const std::out_of_range *>(&e)) {
+            suggestion = "参数越界；检查观测站坐标和仰角阈值是否合理";
+        } else if (dynamic_cast<const std::invalid_argument *>(&e)) {
+            suggestion = "参数无效；检查TLE数据格式和观测站配置";
+        } else if (dynamic_cast<const std::runtime_error *>(&e)) {
+            // runtime_error 细分: 用消息文本做补充分类
+            const QString msg = QString::fromUtf8(e.what());
+            if (msg.contains("传播") || msg.contains("propag")) {
+                suggestion = "检查TLE数据时效性，或使用更新的TLE";
+            } else if (msg.contains("数值") || msg.contains("范围")
+                       || msg.contains("numer") || msg.contains("rang")) {
+                suggestion = "检查观测站坐标和仰角阈值是否合理";
+            } else if (msg.contains("时间") || msg.contains("time")) {
+                suggestion = "缩短预测时间窗口，或检查起始时间设置";
+            } else {
+                suggestion = "尝试缩短预测时间窗口，或检查输入参数";
+            }
         } else {
             suggestion = "尝试缩短预测时间窗口，或检查输入参数";
         }
@@ -400,10 +429,13 @@ void PassPredictWorker::runOneJob(const Job &job)
         // 记录错误并尝试恢复
         bool recoverySuccess = ErrorHandler::instance().handleError(errorInfo);
         
-        // 如果恢复失败，发送错误信号
-        if (!recoverySuccess) {
-            emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
+        // 恢复成功: 自动跳过
+        if (recoverySuccess) {
+            emit jobSkipped(satelliteId, errorInfo.message);
+            return;
         }
+        // 恢复失败，发送错误信号
+        emit errorOccurred(errorInfo.message + "\n" + errorInfo.detailedContext + "\n" + errorInfo.suggestedAction);
         
         return;
     }
@@ -412,12 +444,25 @@ void PassPredictWorker::runOneJob(const Job &job)
     // 将模型信息附加到第一条过境的卫星名称中（modelStr 已在 Step 1.5 计算）
     if (!passes.empty() && !modelStr.isEmpty()) {
         std::string suffix = " [" + modelStr.toStdString() + "]";
-        // 只在卫星名称不含模型信息时才追加
+        // 只在卫星名称不含模型信息时才追加。判据是名称里出现 " ["：
+        // 用户自定义名称若本身含 " ["（如 "ISS [实验]"）会匹配不上而漏加
+        // 后缀——可接受的降级（宁可少加标签也不要把名称改得面目全非）
         for (auto &p : passes) {
             if (p.satelliteName.find(" [") == std::string::npos) {
                 p.satelliteName += suffix;
             }
         }
+    }
+
+    // 写入 TLE（供详情视图按需重新传播）+ 历元（供 UI 直接显示历元/龄期,
+    // 避免详情页为了一行标题重复走一遍完整解析与校验和验证）
+    const std::string tl1 = job.tleLine1.toStdString();
+    const std::string tl2 = job.tleLine2.toStdString();
+    for (auto &p : passes) {
+        p.tleLine1 = tl1;
+        p.tleLine2 = tl2;
+        p.tleEpochYear = tle.epochYear;
+        p.tleEpochDay  = tle.epochDay;
     }
 
     emit resultReady(QVector<PassEvent>(passes.begin(), passes.end()));

@@ -9,6 +9,7 @@
 
 class Observer {
 public:
+    // minElevationDeg: 掩星角（度）。观测几何为纯几何仰角（与 STK AER 报告同定义）
     Observer(double latDeg, double lonDeg, double altKm = 0.0,
              double minElevationDeg = 10.0);
 

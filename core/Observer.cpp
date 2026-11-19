@@ -2,6 +2,7 @@
 // Observer.cpp — 地面站实现
 // =============================================================================
 #include "Observer.h"
+#include <limits>
 #include "CoordTransform.h"
 #include <algorithm>
 #include <cmath>
@@ -21,8 +22,6 @@ Observer::Observer(double latDeg, double lonDeg, double altKm, double minEl)
         // 参数防御: 越界经纬度/负海拔会静默产生失真的站心几何——
         // 纬度钳到 [-90,90], 经度回绕到 [-180,180], 海拔钳到 [0,100]
         mLatDeg = std::clamp(mLatDeg, -90.0, 90.0);
-        if (mLatDeg >= 90.0) mLatDeg = 90.0;
-        if (mLatDeg <= -90.0) mLatDeg = -90.0;
         mLonDeg = std::fmod(mLonDeg + 180.0, 360.0);
         if (mLonDeg < 0.0) mLonDeg += 360.0;
         mLonDeg -= 180.0;
@@ -37,12 +36,7 @@ Observer::Observer(double latDeg, double lonDeg, double altKm, double minEl)
             throw std::invalid_argument("ECEF坐标转换失败");
         }
     } catch (const std::exception &e) {
-        // 记录错误信息（在实际应用中可以使用日志系统）
-        // std::cerr << "观测站初始化失败: " << e.what() << std::endl;
-
-        // 回退到赤道 (0,0) 海平面站, 并由该回退参数【重新生成】ECEF——
-        // 若直接置 mEcef={0,0,0} 会得到地心坐标, 与 (0,0,0) 站的真实
-        // ECEF≈(6378.137,0,0) 不自洽, lookAngle 几何全部失真
+        // 回退到赤道 (0,0) 海平面站
         mLatDeg = 0.0;
         mLonDeg = 0.0;
         mAltKm = 0.0;
@@ -53,44 +47,33 @@ Observer::Observer(double latDeg, double lonDeg, double altKm, double minEl)
 
 LookAngle Observer::lookAngle(const std::array<double, 3> &satECEF) const
 {
-    try {
-        // 检查输入坐标有效性
-        if (!std::isfinite(satECEF[0]) || !std::isfinite(satECEF[1]) || !std::isfinite(satECEF[2])) {
-            throw std::invalid_argument("卫星ECEF坐标无效");
-        }
-        
-        return CoordTransform::computeLookAngle(satECEF, mEcef, mLatDeg, mLonDeg);
-    } catch (const std::exception &e) {
-        // 记录错误信息（在实际应用中可以使用日志系统）
-        // std::cerr << "观测角度计算失败: " << e.what() << std::endl;
-        
-        // 失败回退 -91°: 明确低于地平线, 与 ELEV_FAILURE_SENTINEL 的
-        // "失败永不参与 AOS/LOS 边界检测"语义一致（0° 是合法仰角值）
-        return LookAngle(-91.0, 0.0, 0.0);
+    // 检查输入坐标有效性（直接返回 NaN, 与 CoordTransform 高效模式一致）
+    if (!std::isfinite(satECEF[0]) || !std::isfinite(satECEF[1]) || !std::isfinite(satECEF[2])) {
+        return LookAngle(std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN());
     }
+    // 纯几何站心几何（仰角/方位角/斜距），与 STK AER 报告同定义
+    return CoordTransform::computeLookAngle(satECEF, mEcef, mLatDeg, mLonDeg);
 }
 
 GeoPos Observer::subSatPoint(const std::array<double, 3> &satECEF) const
 {
-    try {
-        // 检查输入坐标有效性
-        if (!std::isfinite(satECEF[0]) || !std::isfinite(satECEF[1]) || !std::isfinite(satECEF[2])) {
-            throw std::invalid_argument("卫星ECEF坐标无效");
-        }
-        
-        GeoPos result = CoordTransform::ecefToGeodetic(satECEF);
-        
-        // 检查结果有效性
-        if (!std::isfinite(result.latDeg) || !std::isfinite(result.lonDeg) || !std::isfinite(result.altKm)) {
-            throw std::invalid_argument("地理坐标转换失败");
-        }
-        
-        return result;
-    } catch (const std::exception &e) {
-        // 记录错误信息（在实际应用中可以使用日志系统）
-        // std::cerr << "星下点计算失败: " << e.what() << std::endl;
-        
-        // 返回默认值
-        return GeoPos(0.0, 0.0, 0.0);
+    // 检查输入坐标有效性（直接返回 NaN, 与系统级 NaN 哨兵约定对齐）
+    if (!std::isfinite(satECEF[0]) || !std::isfinite(satECEF[1]) || !std::isfinite(satECEF[2])) {
+        return GeoPos(std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN());
     }
+
+    GeoPos result = CoordTransform::ecefToGeodetic(satECEF);
+
+    // 检查结果有效性（ecefToGeodetic 已内置 NaN 返回, 此处双重保险）
+    if (!std::isfinite(result.latDeg) || !std::isfinite(result.lonDeg) || !std::isfinite(result.altKm)) {
+        return GeoPos(std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN());
+    }
+
+    return result;
 }

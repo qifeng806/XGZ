@@ -14,37 +14,39 @@ PassTableModel::PassTableModel(QObject *parent)
 
 void PassTableModel::setPasses(const QVector<const PassEvent *> &passes)
 {
-    {
-        QMutexLocker locker(&m_dataMutex);
+    Q_ASSERT(QThread::currentThread() == thread());
 
-        // 指针集合未变（时区切换、同参数重算等）: 跳过全量 reset,
-        // 保留视图滚动位置与当前选中（setTimeZoneOffset 已另行发通知）
-        if (m_passes == passes) return;
-        m_passes = passes;
-    }
+    // 指针集合未变（时区切换、同参数重算等）: 跳过全量 reset,
+    // 保留视图滚动位置与当前选中（setTimeZoneOffset 已另行发通知）
+    if (m_passes == passes) return;
+    m_passes = passes;
 
     // 必须在锁外发射 reset 信号: 视图会同步回调 data()/rowCount()
-    // 再抢同一把非递归锁, 持锁 reset 会与 data() 死锁
     beginResetModel();
     endResetModel();
 }
 
 void PassTableModel::setTimeZoneOffset(int tzOffsetSec)
 {
-    QMutexLocker locker(&m_dataMutex);
-    
+    Q_ASSERT(QThread::currentThread() == thread());
+
     if (m_tzOffsetSec == tzOffsetSec) return;
     m_tzOffsetSec = tzOffsetSec;
-    
-    // 释放锁再发射信号，避免死锁
-    locker.unlock();
-    
+
+    const int rows = m_passes.size();
+
     // 表头与时间列随之变化（时区敏感列含可见弧段 ColArc:
     // 其表头打 tz 标签、单元格经 jdMsToStr 格式化, 漏通知会与
     // 入境/出境列显示不一致）
     emit headerDataChanged(Qt::Horizontal, ColAos, ColArc);
-    if (!m_passes.isEmpty())
-        emit dataChanged(index(0, ColAos), index(rowCount() - 1, ColArc));
+    // 单元格通知只发给**真正随时区变化的 3 列**（入境/出境/可见弧段）:
+    // 用 [ColAos, ColArc] 整段会让视图连带重查其间的持续/最大仰角/方位角/
+    // 可见性/太阳高度/光照等非时区列——切换时区时整表数百行 × 9 列被重新求值
+    if (rows > 0) {
+        static const int tzCols[] = { ColAos, ColLos, ColArc };
+        for (int c : tzCols)
+            emit dataChanged(index(0, c), index(rows - 1, c));
+    }
 }
 
 QString PassTableModel::tzLabel() const
@@ -58,7 +60,7 @@ QString PassTableModel::tzLabel() const
 QString PassTableModel::jdMsToStr(int64_t jdMs) const
 {
     // JD×86400000 毫秒 → 1970 epoch 毫秒（纯整数运算，无舍入/精度损失）
-    qint64 msecs = jdMs - 210866760000000LL;  // 2440587.5 × 86400000
+    qint64 msecs = jdMs - kJdEpochOffsetMs;  // 2440587.5 × 86400000
     QDateTime dt = QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::UTC);
     if (m_tzOffsetSec != 0)
         dt = dt.toTimeZone(QTimeZone(m_tzOffsetSec));
@@ -85,8 +87,10 @@ QVariant PassTableModel::headerData(int section, Qt::Orientation orientation,
         static const char *labels[ColCount] = {
             "#", "卫星名", "入境", "出境", "持续",
             "最大仰角", "方位角", "可见性", "太阳高度", "卫星光照",
-            "可见弧段", "入境位置", "斜距", "多普勒", "星等", "质量"
+            "可见弧段", "入境位置", "斜距", "质量"
         };
+        static_assert(sizeof(labels) / sizeof(labels[0]) == ColCount,
+                      "labels 数组大小必须与 ColCount 列数匹配");
         // 时间列（入境/出境/可见弧段）内容均经 jdMsToStr 按时区偏移,
         // 表头须统一标注时区, 否则弧段列易被误读为 UTC
         if (section == ColAos || section == ColLos
@@ -97,15 +101,16 @@ QVariant PassTableModel::headerData(int section, Qt::Orientation orientation,
     if (role == Qt::ToolTipRole) {
         static const char *tips[ColCount] = {
             nullptr, nullptr, nullptr, nullptr,
-            "过境持续时长", "几何仰角（悬浮显示大气折射后的视仰角）",
+            "过境持续时长", "最大仰角（TCA 时刻）",
             "TCA 时刻方位角", "光学可见 / 仅无线电 / 白天",
             "TCA 时刻太阳高度角", "TCA 时刻卫星日照状态（半影带为太阳圆面可见比例）",
             "几何过境内「暗天 + 被照亮」的连续可见时段",
             "入境时刻卫星星下点经纬度与高度",
-            "TCA 时刻观测者至卫星斜距", "TCA 时刻多普勒频移",
-            "视星等估算（Vallerie 相位模型），越小越亮",
+            "TCA 时刻观测者至卫星斜距",
             "综合质量评级"
         };
+        static_assert(sizeof(tips) / sizeof(tips[0]) == ColCount,
+                      "tips 数组大小必须与 ColCount 列数匹配");
         return tips[section] ? QString::fromUtf8(tips[section]) : QVariant();
     }
     return QVariant();
@@ -113,11 +118,13 @@ QVariant PassTableModel::headerData(int section, Qt::Orientation orientation,
 
 QVariant PassTableModel::data(const QModelIndex &index, int role) const
 {
-    QMutexLocker locker(&m_dataMutex);
-    
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_passes.size())
+    // 先判有效性再取行号（非法索引的 row() 无意义, 顺序符合 Qt 惯例）
+    if (!index.isValid())
         return QVariant();
-    const PassEvent &p = *m_passes[index.row()];
+    const int r = index.row();
+    if (r < 0 || r >= m_passes.size())
+        return QVariant();
+    const PassEvent &p = *m_passes[r];
     const int c = index.column();
     // 列号防御: 与行号同级校验（视图协议保证只请求合法列, 防御越界数组访问）
     if (c < 0 || c >= ColCount)
@@ -139,8 +146,6 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
             Qt::AlignCenter,                   /* 可见弧段 */
             Qt::AlignLeft  | Qt::AlignVCenter, /* 入境位置 */
             Qt::AlignRight | Qt::AlignVCenter, /* 斜距 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 多普勒 */
-            Qt::AlignRight | Qt::AlignVCenter, /* 星等 */
             Qt::AlignCenter                    /* 质量 */
         };
         return QVariant::fromValue(aligns[c]);
@@ -154,22 +159,10 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
                 return QStringLiteral(
                     "过境延续至预测窗口结束时刻（真实出境在窗口外, 持续时长被截断）");
             return QVariant();
-        case ColMaxEl:
-            // 大气折射后的视仰角（几何仰角带过 tooltip 展示, 仅显示用）
-            if (p.tcaElRefracted > 0.0)
-                return QStringLiteral("折射后最大仰角: %1°")
-                    .arg(p.tcaElRefracted, 0, 'f', 1);
-            return QVariant();
         case ColArc:
             if (p.hasVisibleArc)
                 return QStringLiteral(
                     "几何过境内「暗天 + 被照亮」的连续时段，观测者实际可见范围");
-            return QVariant();
-        case ColMag:
-            if (p.magValid)
-                return QStringLiteral(
-                    "视星等估算（Vallerie 相位模型），越小越亮\n"
-                    "固有星等来自内置目录或输入框回退值，误差 ±1~2 星等");
             return QVariant();
         default:
             return QVariant();
@@ -201,20 +194,19 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
 
     if (role != Qt::DisplayRole) return QVariant();
 
-    // 全程持锁返回: 值均为标量/短字符串格式化（微秒级）, 无需中途解锁。
-    // 此前曾在此处 unlock——但 p 是受锁保护的引用, 解锁后继续解引用
-    // 属锁纪律错误（当前 GUI-only 线程模型下无实际竞争, 形式上仍应一致）
+    // model 仅由 GUI 线程访问（QAbstractTableModel 约定），无需锁保护。
+    // p 是 m_passes[r] 的引用，仅在 GUI 线程中有效。
 
     switch (c) {
-    case ColIndex:  return QString::number(index.row() + 1);
+    case ColIndex:  return QString::number(r + 1);
     case ColName:   return QString::fromStdString(p.satelliteName);
     case ColAos:    return jdMsToStr(p.aosJdMs);
     case ColLos:    return jdMsToStr(p.losJdMs);
     case ColDur:    return QStringLiteral("%1s%2")
                             .arg(static_cast<int>(p.durationSec))
                             .arg(p.truncated ? " *" : "");
-    case ColMaxEl:  return QString::number(p.maxElevDeg, 'f', 1) + "°";
-    case ColAz:     return QString::number(p.tcaLook.azDeg, 'f', 1) + "°";
+    case ColMaxEl:  return QString::number(p.maxElevDeg, 'f', 3) + "°";
+    case ColAz:     return QString::number(p.tcaLook.azDeg, 'f', 3) + "°";
     case ColVis: {
         switch (p.visibility) {
         case PassVisibility::Visible:   return QStringLiteral("可见");
@@ -246,9 +238,6 @@ QVariant PassTableModel::data(const QModelIndex &index, int role) const
             .arg(p.aosSatGeo.lonDeg, 0, 'f', 1)
             .arg(p.aosSatGeo.altKm, 0, 'f', 0);
     case ColRange:  return QString::number(p.tcaLook.rangeKm, 'f', 0) + " km";
-    case ColDoppler: return QString::number(p.dopplerAtTcaKHz, 'f', 2) + " kHz";
-    case ColMag:
-        return p.magValid ? QString::number(p.magAtTca, 'f', 1) : QStringLiteral("—");
     case ColQuality:
         switch (p.quality) {
         case PassQuality::Excellent: return QStringLiteral("★★★");

@@ -2,11 +2,13 @@
 // Propagator.cpp — perturb::Satellite 封装实现
 // =============================================================================
 #include "Propagator.h"
+#include "TleParser.h"
 #include "perturb-master/include/perturb/perturb.hpp"
 #include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cassert>
 #include <stdexcept>
 
 Propagator::Propagator() {}
@@ -38,35 +40,46 @@ Propagator &Propagator::operator=(Propagator &&other) noexcept
 }
 
 bool Propagator::initialize(const std::string &line1, const std::string &line2,
-                             std::string &errorMsg)
+                             std::string &errorMsg, GravityModel gravModel)
 {
     // 先清理旧实例
     m_satellite.reset();
     m_initialized = false;
 
-    // 标准 TLE 两行根数必须是 69 字符（列对齐: 末位为校验和）。
-    // 历史上曾用空格补齐短行——那会掩盖数据损坏并让底层按错列解析;
-    // 与 TleParser::BAD_LENGTH 判据对齐, 显式拒绝
-    if (line1.length() < 69 || line2.length() < 69) {
-        errorMsg = "TLE 行长度不足 69 字符";
+    // 行尾处理: 只剥除 CR/LF。**不做**列对齐修复——STK 是定列读取
+    //（见 TleParser.h 头部说明），"修好"的列会读出与 STK 不同的根数
+    auto [norm1, norm2] = TleParser::trimLineEndings(line1, line2);
+
+    // 定列读取只需 ≥ 69 列（多余尾部字段如 SGP4-VER 扩展格式被忽略，
+    // 与 STK 相同）
+    if (norm1.length() < static_cast<size_t>(kTleLineLength)
+        || norm2.length() < static_cast<size_t>(kTleLineLength)) {
+        errorMsg = "TLE 行长度不足 69 列（STK 定列读取的最低要求）";
+        if (norm1.length() < static_cast<size_t>(kTleLineLength))
+            errorMsg += " (行1: " + std::to_string(norm1.length()) + ")";
+        if (norm2.length() < static_cast<size_t>(kTleLineLength))
+            errorMsg += " (行2: " + std::to_string(norm2.length()) + ")";
         return false;
-    }
-    
-    // 添加详细的长度检查信息
-    if (line1.length() != 69) {
-        errorMsg += " (行1长度: " + std::to_string(line1.length()) + " 字符)";
-    }
-    if (line2.length() != 69) {
-        errorMsg += " (行2长度: " + std::to_string(line2.length()) + " 字符)";
     }
 
     // perturb::Satellite::from_tle 接受非 const string 引用（底层会修改）
-    std::string l1 = line1;
-    std::string l2 = line2;
+    std::string l1 = norm1;
+    std::string l2 = norm2;
+
+    // 重力模型转换（switch 已穷举 GravityModel 的全部取值; 万一将来新增枚举值,
+    // -Wswitch 会在编译期报警告, 这里的 return 只是兜底——不用 assert:
+    // 本工程 release 构建未定义 NDEBUG, 断言会直接 abort 进程)
+    auto toPerturbGravModel = [](GravityModel gm) -> perturb::GravModel {
+        switch (gm) {
+            case GravityModel::WGS72:     return perturb::GravModel::WGS72;
+            case GravityModel::WGS84:     return perturb::GravModel::WGS84;
+        }
+        return perturb::GravModel::WGS72;
+    };
 
     try {
         auto sat = std::make_unique<perturb::Satellite>(
-            perturb::Satellite::from_tle(l1, l2, perturb::GravModel::WGS72));
+            perturb::Satellite::from_tle(l1, l2, toPerturbGravModel(gravModel)));
 
         auto err = sat->last_error();
         if (err != perturb::Sgp4Error::NONE) {
@@ -160,7 +173,7 @@ bool Propagator::initialize(const std::string &line1, const std::string &line2,
         }
         
         const double periodMin = (rec.no_unkozai > 1e-12)
-            ? (2.0 * 3.14159265358979323846) / rec.no_unkozai : 0.0;
+            ? (2.0 * M_PI) / rec.no_unkozai : 0.0;
             
         if (!std::isfinite(periodMin) || periodMin <= 0.0) {
             errorMsg = "轨道周期计算错误: 计算得到的周期无效";
@@ -217,6 +230,22 @@ std::optional<EciState> Propagator::propagate(double jd)
         || !std::isfinite(sv.position[2])
         || !std::isfinite(sv.velocity[0]) || !std::isfinite(sv.velocity[1])
         || !std::isfinite(sv.velocity[2]))
+        return std::nullopt;
+
+    // 量值合理性界（宽松包络, 只拦截"数值合法但物理非法"的退化状态）:
+    //   r ∈ [100, 5e5] km（地心距）, |v| ≤ 15 km/s
+    // 阈值取宽松包络（与 Vallado SGP4-VER 验证数据集的不变量一致）:
+    // 注意**不可**收紧到 10 km/s: 高偏心轨道（Molniya/HEO）近地点速度可达
+    // 10.0~10.3 km/s, 自带 Vallado SGP4-VER 数据集里有 6 例近地点速度 >10 km/s
+    //（其中 4 例被要求"窗口内传播必须成功"）, 收紧会误杀合法轨道。
+    // NaN 比较恒假 → 落入 !(...) 分支, 与上方 finite 检查等效兜底
+    const double rKm = std::sqrt(sv.position[0] * sv.position[0]
+                               + sv.position[1] * sv.position[1]
+                               + sv.position[2] * sv.position[2]);
+    const double vKms = std::sqrt(sv.velocity[0] * sv.velocity[0]
+                                + sv.velocity[1] * sv.velocity[1]
+                                + sv.velocity[2] * sv.velocity[2]);
+    if (!(rKm >= 100.0 && rKm <= 5.0e5) || !(vKms <= 15.0))
         return std::nullopt;
 
     EciState result;

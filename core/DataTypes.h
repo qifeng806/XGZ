@@ -5,9 +5,17 @@
 // 纯 C++17，零 Qt 依赖，可独立编译和单元测试
 // =============================================================================
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <array>
 #include <vector>
+#include <cmath>
+
+// ---------------------------------------------------------------------------
+// JD epoch 偏移量: Unix epoch (1970-01-01T00:00:00Z) - JD0 (1858-11-17T00:00:00Z)
+// 即 JD0 到 Unix epoch 的毫秒数: 2440587.5 * 86400000 = 210866760000000
+// ---------------------------------------------------------------------------
+constexpr int64_t kJdEpochOffsetMs = 210866760000000LL;
 
 // ---------------------------------------------------------------------------
 // 轨道模型类别
@@ -20,14 +28,28 @@ enum class Sgp4Type {
 };
 
 // ---------------------------------------------------------------------------
+// 重力模型选择（SGP4/SDP4 内部常数差异）
+// ---------------------------------------------------------------------------
+enum class GravityModel {
+    WGS84     = 1,  // WGS-84（默认，精度更高）
+    WGS72     = 0   // WGS-72 标准（NORAD TLE 传统默认）
+};
+
+// ---------------------------------------------------------------------------
 // TLE 解析结果
 // ---------------------------------------------------------------------------
 struct TleData {
     std::string name;         // 卫星名称（来自 TLE 行0 或 NORAD 编号）
-    int    noradID   = 0;     // NORAD 编号
+    int    noradID   = 0;     // NORAD 编号（列3-7 的数字部分）
+    std::string noradStr;     // 编目号原始串: STK 按字符串保留列3-7（可含字母）
+    char   classification = 'U';   // 密级（行1 列8）
+    std::string intlDesignator;    // 国际编号（行1 列10-17）
     int    epochYear = 0;     // 历元年（4 位，如 2024）
     double epochDay  = 0.0;   // 历元日 + 小数（如 83.56167013）
+    double nDotPer2  = 0.0;   // n/2 一阶导数项（rev/day²，行1 列34-43）
+    double nDotDotPer6 = 0.0; // n/6 二阶导数项（rev/day³，行1 列45-52）
     double bstar     = 0.0;   // B* 大气阻力项（1/地球半径）
+    int    tleEphemerisType = 0;   // 星历类型（行1 列63；0=Kozai 平根数, 2=Brouwer）
     double inclinationDeg  = 0.0;   // 倾角（度）
     double raanDeg         = 0.0;   // 升交点赤经（度）
     double eccentricity    = 0.0;   // 偏心率
@@ -36,15 +58,7 @@ struct TleData {
     double meanMotionRevDay = 0.0;  // 平运动（rev/day）
     int    revNumber = 0;           // 圈号（历元时刻）
     int    elsetNum  = 0;           // 元素集编号
-    Sgp4Type ephemerisType = Sgp4Type::LEO_SGP4;
-    bool   checksumValid = false;   // 校验和是否通过
-    bool   isDecayed     = false;   // 是否已衰减
-
-    // 计算轨道周期（分钟）
-    double periodMinutes() const {
-        if (meanMotionRevDay <= 0.0) return 0.0;
-        return 1440.0 / meanMotionRevDay;
-    }
+    Sgp4Type ephemerisType = Sgp4Type::LEO_SGP4;   // SGP4/SDP4 模型分类
 };
 
 // ---------------------------------------------------------------------------
@@ -72,9 +86,10 @@ struct GeoPos {
 // 站心观测量（仰角/方位角/斜距）
 // ---------------------------------------------------------------------------
 struct LookAngle {
-    double elevDeg = 0.0;   // 仰角（度），地平 0°，天顶 90°
-    double azDeg   = 0.0;   // 方位角（度），北 0°，顺时针（东 90°，南 180°，西 270°）
-    double rangeKm = 0.0;   // 斜距（km）
+    double elevDeg     = 0.0;   // 仰角（度），地平 0°，天顶 90°（几何仰角，
+                                // 与 STK AER 报告同定义：不含大气折射）
+    double azDeg       = 0.0;   // 方位角（度），北 0°，顺时针（东 90°，南 180°，西 270°）
+    double rangeKm     = 0.0;   // 斜距（km）
 
     LookAngle() = default;
     LookAngle(double el, double az, double rng)
@@ -125,17 +140,41 @@ enum class PassQuality {
 };
 
 // ---------------------------------------------------------------------------
+// JD ↔ intMs 转换（详情视图与导出共用）
+// ---------------------------------------------------------------------------
+inline int64_t jdToMs(double jd) {
+    if (!std::isfinite(jd)) return 0;
+    const double maxSafeJd = 9.2e18 / 86400000.0;
+    const double minSafeJd = -9.2e18 / 86400000.0;
+    if (jd > maxSafeJd) return std::numeric_limits<int64_t>::max();
+    if (jd < minSafeJd) return std::numeric_limits<int64_t>::min();
+    int64_t jdInt = static_cast<int64_t>(std::floor(jd));
+    double jdFrac = jd - jdInt;
+    int64_t intMs = jdInt * 86400000LL;
+    int64_t fracMs = static_cast<int64_t>(std::round(jdFrac * 86400000.0));
+    if (fracMs >= 86400000LL) { intMs += 86400000LL; fracMs -= 86400000LL; }
+    else if (fracMs < 0)      { intMs -= 86400000LL; fracMs += 86400000LL; }
+    return intMs + fracMs;
+}
+inline double msToJd(int64_t ms) {
+    const int64_t msPerDay = 86400000LL;
+    int64_t days = ms / msPerDay;
+    int64_t rem  = ms % msPerDay;
+    if (ms < 0 && rem != 0) { days--; rem += msPerDay; }
+    return static_cast<double>(days) + static_cast<double>(rem) / 86400000.0;
+}
+
+// ---------------------------------------------------------------------------
 // 过境弧段采样点（绘图/导出用，由 OrbitCalculator 在过境区间内等步长采集）
 // ---------------------------------------------------------------------------
 struct PassSample {
     int64_t  jdMs = 0;    // 时刻（毫秒儒略日）
     LookAngle look;       // 站心观测角（仰角/方位角/斜距）
     GeoPos    geo;        // 星下点（经纬高）
-    double    dopplerKHz = 0.0;   // 该时刻多普勒频移（enableDoppler 时有效）
 };
 
 // ---------------------------------------------------------------------------
-// 一次完整过境事件（共 22 个字段 + 光照比例 + 弧段采样）
+// 一次完整过境事件（AOS/TCA/LOS 三时刻的观测与光照 + 可见弧段 + 弧段采样）
 // 时刻统一用 int64_t 毫秒儒略日，参考点为 JD 原点（JD×86400000 取整），
 // 与 Unix epoch 毫秒（1970-01-01）不同，转换公式：
 //   epoch_ms = jdMs − 210866760000000LL   （即减去 2440587.5 × 86400000）
@@ -149,7 +188,6 @@ struct PassEvent {
     GeoPos      aosSatGeo;
     double      aosSunAlt    = 0.0;      // AOS 时地面站太阳高度角（度）
     ShadowStatus aosSatShadow = ShadowStatus::FullSunlight;
-    double      aosElRefracted = 0.0;    // 大气折射修正后仰角（度）
 
     // ── TCA（最大仰角）时刻 ──
     int64_t     tcaJdMs      = 0;
@@ -158,7 +196,6 @@ struct PassEvent {
     GeoPos      tcaSatGeo;
     double      tcaSunAlt    = 0.0;
     ShadowStatus tcaSatShadow = ShadowStatus::FullSunlight;
-    double      tcaElRefracted = 0.0;
 
     // ── LOS（出境/落下）时刻 ──
     int64_t     losJdMs      = 0;
@@ -166,16 +203,15 @@ struct PassEvent {
     GeoPos      losSatGeo;
     double      losSunAlt    = 0.0;
     ShadowStatus losSatShadow = ShadowStatus::FullSunlight;
-    double      losElRefracted = 0.0;
 
     // ── 统计信息 ──
     double       durationSec     = 0.0;  // 持续时长（秒）
-    int          passType        = 0;    // 0 = 升轨，1 = 降轨
     PassQuality  quality         = PassQuality::Poor;
     PassVisibility visibility   = PassVisibility::Daylight;
-    double       dopplerAtTcaKHz = 0.0;  // TCA 时刻多普勒频移（kHz）
 
-    // ── 太阳光照比例（本影=0，全日照=1，半影带内线性过渡）──
+    // ── 太阳光照比例（本影=0，全日照=1；半影带内为太阳圆面未被地球遮挡的
+    //     面积比，0<f<1——与 STK Lighting 的三态口径一致，
+    //     详见 EarthShadow::umbraFactor）──
     double aosIllum = 1.0;   // AOS 时刻卫星被太阳照亮的圆面比例
     double tcaIllum = 1.0;
     double losIllum = 1.0;
@@ -188,13 +224,18 @@ struct PassEvent {
     int64_t visLosJdMs   = 0;   // 可见弧段终点
     bool    hasVisibleArc = false;
 
-    // ── 星等估算（Vallerie 1963 相位模型, enableMagnitude 时有效）──
-    double magAtTca = 0.0;      // TCA 时刻视星等（越小越亮; magValid=false 时无效）
-    bool   magValid = false;    // 星等可用（卫星未处本影且几何参数有效）
-
-    // 过境延续至预测窗口外（EXTEND 截断）: LOS 各字段为截断时刻瞬时值,
+    // 过境延伸至预测窗口外（窗口终点截断）: LOS 各字段为截断时刻瞬时值,
     // 并非真实出境值; durationSec 为截断后时长（UI 需注明）
     bool truncated = false;
+
+    // ── TLE 持久存储（用于按需重新传播详情视图）──
+    std::string tleLine1;   // TLE 第一行（~69 字符）
+    std::string tleLine2;   // TLE 第二行（~69 字符）
+    // TLE 历元（解析该 TLE 时一并带出, 供 UI 显示"历元/龄期"而无需为了
+    // 一次展示重新走完整解析）; tleEpochYear == 0 表示未知,
+    // 调用方须回退到重新解析
+    int    tleEpochYear = 0;    // 历元年（4 位）
+    double tleEpochDay  = 0.0;  // 历元日 + 小数
 
     // 过境弧段采样（AOS→LOS 等步长采样，供极坐标/地面轨迹绘图与 KML 导出）
     std::vector<PassSample> samples;

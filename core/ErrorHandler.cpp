@@ -1,9 +1,8 @@
-﻿// =============================================================================
+// =============================================================================
 // ErrorHandler.cpp — 统一错误处理和恢复机制实现
 // =============================================================================
 #include "ErrorHandler.h"
 #include <QDateTime>
-#include <QDebug>
 #include <QMutex>
 #include <QMutexLocker>
 #include <algorithm>
@@ -17,7 +16,7 @@ ErrorHandler& ErrorHandler::instance()
 ErrorHandler::ErrorHandler()
     : m_autoRecoveryEnabled(true)
 {
-    // 统一恢复契约: 仅 WARNING 级自动「跳过」（如校验和警告继续计算）;
+    // 统一恢复契约: 仅 WARNING 级自动「跳过」;
     // ERROR/CRITICAL 一律返回 false 走 errorOccurred 上报——
     // 恢复函数是纯谓词不做任何实际动作, 把 ERROR/CRITICAL 判为
     // 「恢复成功」会让 worker 静默 jobSkipped / 严重度倒置为跳过
@@ -45,7 +44,6 @@ void ErrorHandler::registerRecoveryFunction(ErrorType type, RecoveryFunction fun
 {
     QMutexLocker locker(&m_mutex);
     m_recoveryFunctions[type] = func;
-    qDebug() << "Registered recovery function for error type:" << static_cast<int>(type);
 }
 
 bool ErrorHandler::handleError(const ErrorInfo& error)
@@ -84,12 +82,6 @@ void ErrorHandler::logError(const ErrorInfo& error)
     if (m_errorHistory.size() > 1000) {
         m_errorHistory = m_errorHistory.mid(m_errorHistory.size() - 1000);
     }
-
-    // 输出调试信息
-    qDebug() << "Error logged:" << error.message
-             << "(Type:" << static_cast<int>(error.type)
-             << "Severity:" << static_cast<int>(error.severity)
-             << "Satellite:" << error.satelliteId << ")";
 }
 
 QList<ErrorInfo> ErrorHandler::getErrorHistory(ErrorType type, int maxCount) const
@@ -150,7 +142,6 @@ void ErrorHandler::setAutoRecoveryEnabled(bool enabled)
 {
     QMutexLocker locker(&m_mutex);
     m_autoRecoveryEnabled = enabled;
-    qDebug() << "Auto recovery enabled:" << enabled;
 }
 
 bool ErrorHandler::isAutoRecoveryEnabled() const
@@ -178,11 +169,10 @@ ErrorInfo ErrorHandler::createTleParseError(const QString& satelliteId,
         action = "建议检查TLE格式或使用更新的TLE数据";
     }
 
-    // 根据错误内容判断严重程度
+    // 根据错误内容判断严重程度（解析类错误默认 ERROR:
+    // 当前 TleParser 的失败路径均为致命格式/范围错误, 无 WARNING 级情形）
     ErrorSeverity severity = ErrorSeverity::ERROR;
-    if (details.contains("校验和错误")) {
-        severity = ErrorSeverity::WARNING; // 校验和错误通常是警告
-    } else if (details.contains("卫星已再入")) {
+    if (details.contains("卫星已再入")) {
         severity = ErrorSeverity::CRITICAL; // 卫星再入是严重错误
     }
 
@@ -316,10 +306,7 @@ bool ErrorHandler::internalHandleError(const ErrorInfo& error)
     emit errorRecoveryResult(error, success);
 
     if (success) {
-        qDebug() << "Error recovery successful:" << error.message;
         return true;
-    } else {
-        qDebug() << "Error recovery failed:" << error.message;
     }
 
     // 如果没有恢复函数或恢复失败，返回false

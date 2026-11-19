@@ -73,10 +73,8 @@ void GroundTrackWidget::setPasses(const QVector<const PassEvent *> &passes,
 
 void GroundTrackWidget::setSelectedPass(int index)
 {
-    if (index >= 0 && index < m_passes.size()) {
-        m_selectedIndex = index;
-        update();
-    }
+    m_selectedIndex = (index >= 0 && index < m_passes.size()) ? index : -1;
+    update();
 }
 
 void GroundTrackWidget::clear()

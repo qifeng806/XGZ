@@ -20,18 +20,16 @@ SOURCES += \
     core/SunPosition.cpp \
     core/Nutation.cpp \
     core/EarthShadow.cpp \
-    core/DopplerCalc.cpp \
-    core/VisualMagnitude.cpp \
     core/OrbitCalculator.cpp \
     core/ErrorHandler.cpp \
     business/PassPredictWorker.cpp \
     business/PassPredictorService.cpp \
     business/TleFetcher.cpp \
+    business/TleCache.cpp \
     business/TleBatchParser.cpp \
     ui/MainWindow.cpp \
     ui/PolarPlotWidget.cpp \
     ui/GroundTrackWidget.cpp \
-    ui/DopplerPlotWidget.cpp \
     ui/PassTableModel.cpp \
     perturb-master/src/perturb.cpp \
     perturb-master/src/sgp4.cpp \
@@ -46,19 +44,17 @@ HEADERS += \
     core/SunPosition.h \
     core/Nutation.h \
     core/EarthShadow.h \
-    core/DopplerCalc.h \
-    core/VisualMagnitude.h \
     core/OrbitCalculator.h \
     core/AtomicCancelFlag.h \
     core/ErrorHandler.h \
     business/PassPredictWorker.h \
     business/PassPredictorService.h \
     business/TleFetcher.h \
+    business/TleCache.h \
     business/TleBatchParser.h \
     ui/MainWindow.h \
     ui/PolarPlotWidget.h \
     ui/GroundTrackWidget.h \
-    ui/DopplerPlotWidget.h \
     ui/CatmullRomSpline.h \
     ui/PassTableModel.h \
     perturb-master/include/perturb/perturb.hpp \

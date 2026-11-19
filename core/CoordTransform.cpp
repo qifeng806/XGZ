@@ -4,8 +4,9 @@
 #include "CoordTransform.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
-#include <stdexcept>
+
 #include <vector>
 
 #ifndef M_PI
@@ -21,135 +22,109 @@ namespace {
     inline double deg2rad(double d) { return d * DEG2RAD; }
     inline double rad2deg(double r) { return r / DEG2RAD; }
     
-    // GMST 缓存结构
-    struct GmstCacheEntry {
-        double jdUt1;
-        double gmstRad;
-        
-        GmstCacheEntry(double jd, double gmst) : jdUt1(jd), gmstRad(gmst) {}
-        
-        bool isClose(double jd, double tolerance = 1e-8) const {
-            return std::abs(jdUt1 - jd) < tolerance;
-        }
-    };
-    
-    // GMST 缓存: thread_local 隔离每线程缓存。
-    // 预报 worker 池（最多 16 线程）并发调用 gmstRad（每传播步一次），
-    // 共享 std::vector 的 push_back/erase/遍历并发即未定义行为——
-    // Nutation.cpp 同款问题已用 thread_local 修复，此处一并对齐
-    static thread_local std::vector<GmstCacheEntry> gmstCache;
-    
-    // 清除 GMST 缓存
-    void clearGmstCache() {
-        gmstCache.clear();
-    }
-    
-    // 添加 GMST 缓存项
-    void addGmstCache(double jdUt1, double gmstRad) {
-        if (gmstCache.size() >= CoordTransform::MAX_CACHE_SIZE) {
-            // 如果缓存满了，移除最旧的项
-            gmstCache.erase(gmstCache.begin());
-        }
-        gmstCache.emplace_back(jdUt1, gmstRad);
-    }
-    
-    // 从缓存查找 GMST
-    std::optional<double> findGmstCache(double jdUt1) {
-        for (const auto& entry : gmstCache) {
-            if (entry.isClose(jdUt1)) {
-                return entry.gmstRad;
-            }
-        }
-        return std::nullopt;
-    }
+    // GMST 记忆化: 以"当天 0h 的 JD"为键的**单条目**缓存（O(1)，无线性扫描）。
+    // 时间扫掠（粗搜 15s 步长 + 二分/采样回访）下相邻查询的 jd0 大量重复，
+    // 命中即省去多项式；不命中只重算一次。
+    //
+    // 历史教训（性能回归修复）: 曾用 1000 项 FIFO + 容差 1e-8 天的 vector
+    // 线性扫描缓存。扫掠时相邻 JD 相差 ~1.7e-4 天（≫ 容差）→ 几乎全部未命中，
+    // 而每次未命中仍需扫满 1000 项；实测比不缓存慢 25~27 倍，占粗搜单步
+    // 耗时约 39%。单条目按日键命中率高且无扫描成本。
+    thread_local double memoJd0 = std::numeric_limits<double>::quiet_NaN();
+    thread_local double memoGmstSec0 = 0.0;
 }
 
 // ============================================================================
 // gmstRad — IAU-1982 格林尼治平恒星时（弧度）
 // 输入为 UT1 儒略日；可用 UTC 直接近似（UT1−UTC ≤ 0.9s），
 // 切勿加 ΔT（ΔT = TT−UT1，加了得到 TT，地球自转角会系统性偏大 ~69s 恒星时）
+//
+// 为什么**不能**"升级"为 IAU-2006:
+//   TEME 基于赤道/春分点框架，其定义与 SGP4 输出一致，必须用 IAU-1982 GMST
+//   （Vallado"Revisiting Spacetrack Report #3"/AIAA 2006-6753 中 TOD↔PEF 即用
+//   θ_GMST82；本工程内置 perturb 的 gstime_SGP4 亦用同一组系数）。
+//   若误用 IAU-2006 的 ERA（基于 CIO）会引入 ERA−GMST ≈ 4612.156534″·T 的
+//   偏差——2025 年即 1153″ ≈ 0.32° ≈ 地面上 36 km；即便只用 GMST06 表达式，
+//   与 GMST82 的差异也仅 0.055″（1.7 m），收益远小于框架不一致的风险。
 // ============================================================================
 double CoordTransform::gmstRad(double jdUt1)
 {
-    try {
-        // 输入验证
-        if (!std::isfinite(jdUt1)) {
-            throw std::invalid_argument("无效的儒略日输入");
-        }
+    // 输入验证（直接返回 NaN, 与相邻 eciDirToEcef 的高效模式一致,
+    // 避免热路径中 throw/catch 的 10-100x 性能开销）
+    if (!std::isfinite(jdUt1)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
 
-        // 优化：检查缓存
-        auto cached = findGmstCache(jdUt1);
-        if (cached) {
-            return *cached;
-        }
+    // 当天 0h UT1 的儒略日
+    double jd0 = std::floor(jdUt1 - 0.5) + 0.5;
 
-        // 当天 0h UT1 的儒略日
-        double jd0 = std::floor(jdUt1 - 0.5) + 0.5;
-
+    // 记忆化: jd0 由 jdUt1 确定性导出, 精确相等才复用（无需容差）
+    double gmstSec = 0.0;
+    if (memoJd0 == jd0) {
+        gmstSec = memoGmstSec0;
+    } else {
         // J2000.0 起算的儒略世纪
         double T = (jd0 - 2451545.0) / 36525.0;
-        
+
         // 检查T的有效性
         if (!std::isfinite(T)) {
-            throw std::invalid_argument("儒略世纪计算结果无效");
+            return std::numeric_limits<double>::quiet_NaN();
         }
 
-        // 当天 0h 的 GMST（秒）
-        double gmstSec = 24110.54841
-                       + 8640184.812866 * T
-                       + 0.093104 * T * T
-                       - 6.2e-6 * T * T * T;
-        
+        // 当天 0h 的 GMST（秒）: IAU-1982 公式
+        gmstSec = 24110.54841
+                + 8640184.812866 * T
+                + 0.093104 * T * T
+                - 6.2e-6 * T * T * T;
+
         // 检查gmstSec的有效性
         if (!std::isfinite(gmstSec)) {
-            throw std::invalid_argument("GMST秒数计算结果无效");
+            return std::numeric_limits<double>::quiet_NaN();
         }
 
-        // 加上当天 UT1 小数的贡献（恒星日 / 太阳日 ≈ 1.00273790935）
-        double fracDay = (jdUt1 - jd0);
-        gmstSec += SEC_PER_DAY * fracDay * 1.00273790935;
-        
-        // 检查fracDay的有效性
-        if (!std::isfinite(fracDay)) {
-            throw std::invalid_argument("儒略日小数部分计算结果无效");
-        }
-
-        // 取模 → 转为弧度 → 正规化到 [0, 2π)
-        gmstSec = std::fmod(gmstSec, SEC_PER_DAY);
-        if (gmstSec < 0.0) gmstSec += SEC_PER_DAY;
-
-        double gmstRad = gmstSec * TWOPI / SEC_PER_DAY;
-        
-        // 确保结果在有效范围内
-        if (!std::isfinite(gmstRad)) {
-            throw std::invalid_argument("GMST弧度计算结果无效");
-        }
-        
-        // 规范化到[0, 2π)范围
-        gmstRad = std::fmod(gmstRad, TWOPI);
-        if (gmstRad < 0.0) gmstRad += TWOPI;
-
-        // 优化：添加到缓存
-        addGmstCache(jdUt1, gmstRad);
-
-        return gmstRad;
-    } catch (const std::exception &e) {
-        // 记录错误信息（在实际应用中可以使用日志系统）
-        // std::cerr << "gmstRad 计算失败: " << e.what() << std::endl;
-        return 0.0;  // 返回零值作为错误处理
+        memoJd0 = jd0;
+        memoGmstSec0 = gmstSec;
     }
+
+    // 加上当天 UT1 小数的贡献（恒星日 / 太阳日 ≈ 1.00273790935）
+    double fracDay = (jdUt1 - jd0);
+    gmstSec += SEC_PER_DAY * fracDay * 1.00273790935;
+
+    // 检查fracDay的有效性
+    if (!std::isfinite(fracDay)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    // 取模 → 转为弧度 → 正规化到 [0, 2π)
+    gmstSec = std::fmod(gmstSec, SEC_PER_DAY);
+    if (gmstSec < 0.0) gmstSec += SEC_PER_DAY;
+
+    double gmstRadVal = gmstSec * TWOPI / SEC_PER_DAY;
+
+    // 确保结果在有效范围内
+    if (!std::isfinite(gmstRadVal)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    // 规范化到[0, 2π)范围
+    gmstRadVal = std::fmod(gmstRadVal, TWOPI);
+    if (gmstRadVal < 0.0) gmstRadVal += TWOPI;
+
+    return gmstRadVal;
 }
 
 // ============================================================================
 // deltaTSeconds — ΔT = TT − UT1（秒）
-// Espenak & Meeus (2006) 分段多项式, 覆盖 1900~2100 年
+// Espenak & Meeus (2006) 分段多项式（NASA deltatpoly2004）:
+//   1900~2050 各分段 + 2050~2150 段（含 −0.5628·(2150−y) 连续性修正项）
+//   + ≥2150 长期抛物线; <1900 取 1900 边界值
 // 应用内历元范围之外时取边界值，保证连续
 // ============================================================================
 double CoordTransform::deltaTSeconds(double jdUtc)
 {
     // 输入验证
     if (!std::isfinite(jdUtc)) {
-        return 0.0;  // 无效输入返回零值
+        return std::numeric_limits<double>::quiet_NaN();  // NaN 哨兵
     }
 
     // 儒略日 → 年份（近似，足够 ΔT 使用）
@@ -157,7 +132,7 @@ double CoordTransform::deltaTSeconds(double jdUtc)
     
     // 检查年份的有效性
     if (!std::isfinite(year)) {
-        return 0.0;  // 无效年份返回零值
+        return std::numeric_limits<double>::quiet_NaN();  // NaN 哨兵
     }
 
     if (year < 1900.0) {
@@ -215,12 +190,16 @@ double CoordTransform::deltaTSeconds(double jdUtc)
         if (!std::isfinite(term2)) return term1;  // 无效项返回部分结果
         return term1 + term2;
     }
-    // ≥ 2050（含 extrapolate 2100 后）
-    double t = (year - 1820.0) / 100.0;
+    // 2050 ~ 2150: Espenak & Meeus (2006) 分段式（NASA deltatpoly2004）
+    //   ΔT = −20 + 32·u² − 0.5628·(2150 − year),  u = (year − 1820)/100
+    // 末项用于消除 2050 处的不连续: 本段在 2050.0 处与 2005~2050 段同为
+    // 93.00 s, 在 2150 处与长期式同为 328.48 s（缺该项会在 2050 跳变 +56.28 s）
+    // ≥ 2150: 长期抛物线 ΔT = −20 + 32·u²（即下式的 term2 = 0）
+    const double t = (year - 1820.0) / 100.0;
     if (!std::isfinite(t)) return -20.0;  // 无效t值返回边界值
-    double term1 = -20.0 + 32.0 * t * t;
-    double term2 = -0.5628 * (2150.0 - year);
-    if (!std::isfinite(term2)) return term1;  // 无效项返回部分结果
+    const double term1 = -20.0 + 32.0 * t * t;
+    const double term2 = (year < 2150.0) ? -0.5628 * (2150.0 - year) : 0.0;
+    if (!std::isfinite(term1) || !std::isfinite(term2)) return -20.0;
     return term1 + term2;
 }
 
@@ -230,47 +209,39 @@ double CoordTransform::deltaTSeconds(double jdUtc)
 std::array<double, 3> CoordTransform::eciToEcef(
     const std::array<double, 3> &posTeme, double jdUt1)
 {
-    try {
-        // 输入验证
-        if (!std::isfinite(jdUt1)) {
-            throw std::invalid_argument("无效的儒略日输入");
-        }
-        
-        // 检查位置矢量
-        if (!std::isfinite(posTeme[0]) || !std::isfinite(posTeme[1]) || !std::isfinite(posTeme[2])) {
-            throw std::invalid_argument("无效的位置矢量输入");
-        }
-
-        double theta = gmstRad(jdUt1);
-        if (!std::isfinite(theta)) {
-            throw std::invalid_argument("GMST角度计算结果无效");
-        }
-        
-        double c = std::cos(theta);
-        double s = std::sin(theta);
-        
-        // 检查三角函数值的有效性
-        if (!std::isfinite(c) || !std::isfinite(s)) {
-            throw std::invalid_argument("三角函数计算结果无效");
-        }
-
-        double x = posTeme[0] * c + posTeme[1] * s;
-        double y = -posTeme[0] * s + posTeme[1] * c;
-        double z = posTeme[2];
-
-        // 检查结果的有效性
-        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-            throw std::invalid_argument("坐标转换结果无效");
-        }
-
-        return {x, y, z};
-    } catch (const std::exception &e) {
-        // NaN 哨兵: 与真实地心坐标 {0,0,0} 可区分——{0,0,0} 是有限值,
-        // 会经 Observer::lookAngle 产出约 -90° 有限仰角, 绕过 ELEV_FAILURE_
-        // SENTINEL 的"失败 vs 真实地平线以下"区分; NaN 沿调用链被 isfinite
-        // 检查/NaN 比较自然拦截, 一律按失败处理
+    // 输入验证（直接返回 NaN, 避免热路径中 throw/catch 性能开销）
+    if (!std::isfinite(jdUt1)) {
         return {NAN, NAN, NAN};
     }
+    
+    // 检查位置矢量
+    if (!std::isfinite(posTeme[0]) || !std::isfinite(posTeme[1]) || !std::isfinite(posTeme[2])) {
+        return {NAN, NAN, NAN};
+    }
+
+    double theta = gmstRad(jdUt1);
+    if (!std::isfinite(theta)) {
+        return {NAN, NAN, NAN};
+    }
+    
+    double c = std::cos(theta);
+    double s = std::sin(theta);
+    
+    // 检查三角函数值的有效性
+    if (!std::isfinite(c) || !std::isfinite(s)) {
+        return {NAN, NAN, NAN};
+    }
+
+    double x = posTeme[0] * c + posTeme[1] * s;
+    double y = -posTeme[0] * s + posTeme[1] * c;
+    double z = posTeme[2];
+
+    // 检查结果的有效性
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        return {NAN, NAN, NAN};
+    }
+
+    return {x, y, z};
 }
 
 // ============================================================================
@@ -315,66 +286,6 @@ std::array<double, 3> CoordTransform::eciDirToEcef(
 }
 
 // ============================================================================
-// eciStateToEcef — TEME 位置+速度 → ECEF（含地球自转哥里奥利项）
-// ============================================================================
-std::pair<std::array<double, 3>, std::array<double, 3>>
-CoordTransform::eciStateToEcef(const std::array<double, 3> &posTeme,
-                               const std::array<double, 3> &velTeme,
-                               double jdUt1)
-{
-    // 输入验证（失败一律 NaN 哨兵: 与同文件 eciToEcef/eciDirToEcef 的
-    // 策略一致——{0,0,0} 是合法地心坐标, 零值哨兵会被下游当真实数据
-    // 计算出看似有效的错误结果; NaN 经 isfinite/NaN 比较自然拦截）
-    if (!std::isfinite(jdUt1)) {
-        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
-    }
-    
-    // 检查位置和速度矢量
-    if (!std::isfinite(posTeme[0]) || !std::isfinite(posTeme[1]) || !std::isfinite(posTeme[2]) ||
-        !std::isfinite(velTeme[0]) || !std::isfinite(velTeme[1]) || !std::isfinite(velTeme[2])) {
-        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
-    }
-
-    double theta = gmstRad(jdUt1);
-    if (!std::isfinite(theta)) {
-        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
-    }
-    
-    double c = std::cos(theta);
-    double s = std::sin(theta);
-    
-    // 检查三角函数值的有效性
-    if (!std::isfinite(c) || !std::isfinite(s)) {
-        return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
-    }
-
-    std::array<double, 3> posEcef = {
-        posTeme[0] * c + posTeme[1] * s,
-       -posTeme[0] * s + posTeme[1] * c,
-         posTeme[2]
-    };
-
-    // 惯性速度先旋转到地面系参考，再减去地球自转牵连速度:
-    // v_ECEF = R(θ)·v_TEME − ω×r_ECEF
-    // ω×r = (0, 0, ω)×(rx, ry, rz) = (−ω·ry, ω·rx, 0)
-    constexpr double OMEGA_EARTH_RAD_S = 7.292115e-5;
-    std::array<double, 3> velEcef = {
-        velTeme[0] * c + velTeme[1] * s + OMEGA_EARTH_RAD_S * posEcef[1],
-       -velTeme[0] * s + velTeme[1] * c - OMEGA_EARTH_RAD_S * posEcef[0],
-         velTeme[2]
-    };
-    
-    // 检查结果的有效性
-    for (const auto& vec : {posEcef, velEcef}) {
-        if (!std::isfinite(vec[0]) || !std::isfinite(vec[1]) || !std::isfinite(vec[2])) {
-            return {{NAN, NAN, NAN}, {NAN, NAN, NAN}};  // 无效结果返回 NaN 哨兵
-        }
-    }
-
-    return { posEcef, velEcef };
-}
-
-// ============================================================================
 // ecefToGeodetic — Bowring 1976 闭式解法: ECEF → WGS84 经纬高
 // ============================================================================
 GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
@@ -383,7 +294,9 @@ GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
     
     // 输入验证
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-        return GeoPos(0.0, 0.0, 0.0);  // 无效输入返回零值
+        return GeoPos(std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN());
     }
 
     double r = std::sqrt(x * x + y * y);
@@ -411,17 +324,14 @@ GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
         return GeoPos(latDeg, lonDeg, altKm);
     }
 
-    // 防止分母为零
-    if (r < 1e-9) {
-        r = 1e-9;
-    }
-
     double theta = std::atan2(z * a, r * b);
     double sinT = std::sin(theta), cosT = std::cos(theta);
     
     // 检查三角函数值的有效性
     if (!std::isfinite(sinT) || !std::isfinite(cosT)) {
-        return GeoPos(0.0, lonDeg, 0.0);  // 无效计算返回零值
+        return GeoPos(std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN());
     }
 
     double lat = std::atan2(z + ep2 * b * sinT * sinT * sinT,
@@ -429,7 +339,9 @@ GeoPos CoordTransform::ecefToGeodetic(const std::array<double, 3> &p)
     
     // 检查纬度计算结果
     if (!std::isfinite(lat)) {
-        return GeoPos(0.0, lonDeg, 0.0);  // 无效纬度返回零值
+        return GeoPos(std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN(),
+                      std::numeric_limits<double>::quiet_NaN());
     }
 
     // 高度/纬度固定点迭代（Bowring 闭式解做初值，2~3 次即收敛）
@@ -519,7 +431,9 @@ std::array<double, 3> CoordTransform::geodeticToEcef(const GeoPos &geo)
 {
     // 输入验证
     if (!std::isfinite(geo.latDeg) || !std::isfinite(geo.lonDeg) || !std::isfinite(geo.altKm)) {
-        return {0.0, 0.0, 0.0};  // 无效输入返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     // 确保纬度在有效范围内
@@ -539,21 +453,27 @@ std::array<double, 3> CoordTransform::geodeticToEcef(const GeoPos &geo)
     
     // 检查三角函数值的有效性
     if (!std::isfinite(sinLat) || !std::isfinite(cosLat)) {
-        return {0.0, 0.0, 0.0};  // 无效三角函数返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     // 计算卯酉圈曲率半径N，避免数值不稳定
     double e2_sin2 = WGS84_E2 * sinLat * sinLat;
     if (e2_sin2 >= 1.0) {
-        // 纬度过大导致数值不稳定，使用边界值
-        return {0.0, 0.0, 0.0};
+        // 纬度过大导致数值不稳定
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
     
     double N = WGS84_A_KM / std::sqrt(1.0 - e2_sin2);
     
     // 检查N的有效性
     if (!std::isfinite(N) || N <= 0.0) {
-        return {0.0, 0.0, 0.0};  // 无效N值返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     // 计算各分量
@@ -562,7 +482,9 @@ std::array<double, 3> CoordTransform::geodeticToEcef(const GeoPos &geo)
     
     // 检查经度三角函数值的有效性
     if (!std::isfinite(cosLon) || !std::isfinite(sinLon)) {
-        return {0.0, 0.0, 0.0};  // 无效三角函数返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     double N_plus_alt = N + alt;
@@ -572,7 +494,9 @@ std::array<double, 3> CoordTransform::geodeticToEcef(const GeoPos &geo)
 
     // 检查最终结果的有效性
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-        return {0.0, 0.0, 0.0};  // 无效结果返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     return {x, y, z};
@@ -587,12 +511,16 @@ std::array<double, 3> CoordTransform::ecefToEnuComponents(
 {
     // 输入验证
     if (!std::isfinite(staLatDeg) || !std::isfinite(staLonDeg)) {
-        return {0.0, 0.0, 0.0};  // 无效输入返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
     
     // 检查相对矢量
     if (!std::isfinite(d[0]) || !std::isfinite(d[1]) || !std::isfinite(d[2])) {
-        return {0.0, 0.0, 0.0};  // 无效矢量返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     // 确保纬度在有效范围内
@@ -612,7 +540,9 @@ std::array<double, 3> CoordTransform::ecefToEnuComponents(
     // 检查三角函数值的有效性
     if (!std::isfinite(sLat) || !std::isfinite(cLat) || 
         !std::isfinite(sLon) || !std::isfinite(cLon)) {
-        return {0.0, 0.0, 0.0};  // 无效三角函数返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     // 计算各分量
@@ -622,7 +552,9 @@ std::array<double, 3> CoordTransform::ecefToEnuComponents(
 
     // 检查结果的有效性
     if (!std::isfinite(east) || !std::isfinite(north) || !std::isfinite(up)) {
-        return {0.0, 0.0, 0.0};  // 无效结果返回零值
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
     }
 
     return {east, north, up};
@@ -636,11 +568,12 @@ LookAngle CoordTransform::computeLookAngle(
     const std::array<double, 3> &staECEF,
     double staLatDeg, double staLonDeg)
 {
-    // 输入验证（失败回退 -91°: 明确低于地平线, 与 OrbitCalculator 的
-    // ELEV_FAILURE_SENTINEL 失败语义一致——0° 是合法的"恰好地平线"仰角,
-    // 会参与边界检测; -91° 永不触发 AOS/LOS 判定）
+    // 输入验证（失败返回 NaN: 与 eciToEcef 策略对齐, 调用方
+    // elevationAt 通过 !std::isfinite 检查自然拦截）
     if (!std::isfinite(staLatDeg) || !std::isfinite(staLonDeg)) {
-        return LookAngle(-91.0, 0.0, 0.0);
+        return LookAngle(std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN());
     }
 
     // 相对矢量
@@ -653,7 +586,9 @@ LookAngle CoordTransform::computeLookAngle(
     // 检查输入坐标的有效性
     for (const auto& coord : {satECEF, staECEF}) {
         if (!std::isfinite(coord[0]) || !std::isfinite(coord[1]) || !std::isfinite(coord[2])) {
-            return LookAngle(-91.0, 0.0, 0.0);
+            return LookAngle(std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::quiet_NaN());
         }
     }
 
@@ -667,7 +602,9 @@ LookAngle CoordTransform::computeLookAngle(
 
     // 检查ENU分量是否有效
     if (!std::isfinite(e) || !std::isfinite(n) || !std::isfinite(u)) {
-        return LookAngle(-91.0, 0.0, 0.0);
+        return LookAngle(std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN());
     }
 
     // 计算归一化的高度分量，并进行严格范围检查
@@ -679,7 +616,9 @@ LookAngle CoordTransform::computeLookAngle(
     
     // 检查结果是否为有效数值
     if (!std::isfinite(u_normalized)) {
-        return LookAngle(-91.0, 0.0, 0.0);
+        return LookAngle(std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::quiet_NaN());
     }
 
     double elDeg = std::asin(u_normalized) * 180.0 / PI;
@@ -693,93 +632,9 @@ LookAngle CoordTransform::computeLookAngle(
     azDeg = std::fmod(azDeg, 360.0);
     if (azDeg < 0.0) azDeg += 360.0;
 
+    // 几何仰角（detic, 椭球法线）: 与 STK AER 报告同定义——**不含**大气折射。
+    // STK 的折射是可选模型（Effective Radius / ITU-R P.834-4 / SCF），
+    // 且默认不参与 Access 计算（Help > Sensors > Refraction），本工程一律按
+    // 几何仰角口径输出，避免与 STK 报告/约束对不上
     return LookAngle(elDeg, azDeg, range);
-}
-
-// ============================================================================
-// applyRefraction — 大气折射修正（Bennett 1982）
-// ============================================================================
-double CoordTransform::applyRefraction(double elGeomDeg)
-{
-    // 输入验证
-    if (!std::isfinite(elGeomDeg)) {
-        return elGeomDeg;  // 无效输入直接返回
-    }
-
-    // Bennett 公式在负仰角下不适用（tan 会变号）
-    if (elGeomDeg < 0.0) return elGeomDeg;
-    
-    // 极高仰角（近天顶）时 Bennett 公式分子趋 0 甚至变负，
-    // 折射修正物理上必然非负 → 直接返回原值（L-3 修复）
-    if (elGeomDeg >= 88.0) return elGeomDeg;
-
-    // 检查分母是否接近零点，避免数值不稳定
-    double denominator = elGeomDeg + 4.4;
-    if (std::fabs(denominator) < 1e-10) {
-        // 接近奇点，使用线性外推
-        return elGeomDeg;
-    }
-
-    // Bennett 1982: R(弧分) = 1 / tan(h + 7.31/(h + 4.4))
-    // h = 仰角（度）
-    double h_deg = elGeomDeg + 7.31 / denominator;
-    double hRad = deg2rad(h_deg);
-    
-    // 检查hRad是否在有效范围内
-    if (!std::isfinite(hRad) || hRad < 0.0 || hRad > PI) {
-        return elGeomDeg;  // 无效计算直接返回原值
-    }
-
-    double tan_h = std::tan(hRad);
-    
-    // 检查tan值是否过大或过小
-    if (std::fabs(tan_h) < 1e-12) {
-        // 接近π/2，使用渐进行为
-        return elGeomDeg + 0.0;  // 天顶附近折射趋近于0
-    }
-    
-    double R_arcmin = 1.0 / tan_h;
-    
-    // 不使用简单的钳制为0，而是检查数值问题的根源
-    if (R_arcmin < 0.0) {
-        // 负值可能是由于数值误差或物理上不可能的情况
-        // 记录错误并使用保守估计
-        R_arcmin = 0.0;
-    }
-
-    // 检查折射值是否合理（物理上折射角通常小于1度）
-    if (R_arcmin > 60.0) {  // 大于1度
-        R_arcmin = 60.0;  // 钳制到最大合理值
-    }
-
-    // [0,1]° 线性过渡带: Bennett 在 0° 处 R≈0.57° 的突跳会让
-    // 掩星边缘的"视仰角"不连续 → 按 el/1° 线性缩放，从 0 平滑过渡
-    // 到 el=1° 处的 Bennett 值（el=1 时系数为 1，与 Bennett 无缝衔接；
-    // Bennett 从 1° 到 0° 仅从 0.41° 升至 0.57°，线性缩放后全程单调）
-    if (elGeomDeg < 1.0) {
-        R_arcmin *= elGeomDeg;
-    }
-
-    double result = elGeomDeg + R_arcmin / 60.0;  // 弧分 → 度
-    
-    // 确保结果有效且在合理范围内
-    if (!std::isfinite(result) || result < elGeomDeg) {
-        return elGeomDeg;  // 无效结果返回原值
-    }
-
-    return result;
-}
-
-// ============================================================================
-// 缓存管理函数
-// 注意: gmstCache 为 thread_local（每线程独立缓存）——clearCache()/getCacheSize()
-// 只作用/反映当前调用线程; worker 池各线程缓存不受主线程清理影响, 属于
-// 设计内行为（缓存隔离避免并发 UB 的代价）
-// ============================================================================
-void CoordTransform::clearCache() {
-    clearGmstCache();
-}
-
-size_t CoordTransform::getCacheSize() {
-    return gmstCache.size();
 }

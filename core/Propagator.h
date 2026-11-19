@@ -31,7 +31,8 @@ public:
 
     // 从 TLE 两行初始化（字符串会被修改，传入副本）
     bool initialize(const std::string &line1, const std::string &line2,
-                    std::string &errorMsg);
+                    std::string &errorMsg,
+                    GravityModel gravModel = GravityModel::WGS84);
 
     bool isInitialized() const { return m_initialized; }
 

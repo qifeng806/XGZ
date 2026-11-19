@@ -2,7 +2,7 @@
 #define CORE_COORDTRANSFORM_H
 // =============================================================================
 // CoordTransform.h — 坐标转换工具集
-// GMST | TEME(ECI) ↔ ECEF | ECEF ↔ 大地经纬高 | ENU 站心 | 大气折射
+// GMST | TEME(ECI) ↔ ECEF | ECEF ↔ 大地经纬高 | ENU 站心（纯几何, 无折射）
 // 所有函数为纯静态方法，无状态
 // =============================================================================
 #include "DataTypes.h"
@@ -17,14 +17,10 @@ public:
     static constexpr double WGS84_E2         = 2.0 / WGS84_F_INV
                                              - 1.0 / (WGS84_F_INV * WGS84_F_INV);
 
-    // 缓存大小限制
-    static constexpr size_t MAX_CACHE_SIZE = 1000;
-    
-    // 清除缓存（在长时间运行或内存紧张时调用）
-    static void clearCache();
-    
-    // 获取缓存统计信息
-    static size_t getCacheSize();
+    // ---- GMST 记忆化 ----
+    // 实现为 thread_local 单条目缓存（键 = "当天 0h 的儒略日"），O(1) 无扫描。
+    // 旧实现为 1000 项 FIFO + 容差 1e-8 天的线性扫描：扫掠调用下几乎全不命中
+    // 且每次未命中都要扫满 1000 项，实测比不计算更慢（详见 .cpp 注释）
 
     // ---- GMST 格林尼治平恒星时 ----
     // jdUt1: 儒略日（UT1，可用 UTC 近似，差值 < 0.9s）
@@ -32,7 +28,9 @@ public:
     static double gmstRad(double jdUt1);
 
     // ---- ΔT = TT − UT1（秒）----
-    // Espenak & Meeus (2006) 分段多项式, 覆盖 1900~2100
+    // Espenak & Meeus (2006)/NASA deltatpoly2004 分段多项式:
+    //   1900~2050 各分段 + 2050~2150 段（含 −0.5628·(2150−y) 连续性修正项）
+    //   + ≥2150 长期抛物线; <1900 取 1900 边界值（−2.79 s）
     // 仅用于太阳/行星历表（TT 时标）: jdTT = jdUtc + ΔT/86400
     // 注意: GMST/地球自转需要 UT1，而 UT1 ≈ UTC（≤ 0.9s），不可加 ΔT
     static double deltaTSeconds(double jdUtc);
@@ -49,13 +47,6 @@ public:
     static std::array<double, 3> eciDirToEcef(
         const std::array<double, 3> &dirTeme, double jdUt1);
 
-    // ---- TEME 位置+速度 → ECEF（含地球自转哥里奥利项） ----
-    // velECEF = R(θ)·velTeme − ω×rECEF，ω = 地球自转角速度
-    // 返回 {posECEF, velECEF}，供多普勒等需要地面系速度的场合
-    static std::pair<std::array<double, 3>, std::array<double, 3>>
-        eciStateToEcef(const std::array<double, 3> &posTeme,
-                       const std::array<double, 3> &velTeme, double jdUt1);
-
     // ---- ECEF → 大地经纬高（Bowring 1976 迭代法） ----
     static GeoPos ecefToGeodetic(const std::array<double, 3> &ecef);
 
@@ -70,15 +61,11 @@ public:
         double staLatDeg, double staLonDeg);
 
     // ---- 整站: 卫星 ECEF + 站 ECEF + 站经纬 → LookAngle ----
+    // 输出为纯几何量（不含大气折射）: 与 STK AER 报告同定义
     static LookAngle computeLookAngle(
         const std::array<double, 3> &satECEF,
         const std::array<double, 3> &staECEF,
         double staLatDeg, double staLonDeg);
-
-    // ---- 大气折射修正（Bennett 1982） ----
-    // elGeomDeg: 几何仰角（度），必须 ≥ 0°
-    // 返回: 视仰角（度），已施加大气折射
-    static double applyRefraction(double elGeomDeg);
 };
 
 #endif // CORE_COORDTRANSFORM_H

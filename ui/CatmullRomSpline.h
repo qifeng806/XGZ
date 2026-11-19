@@ -45,6 +45,6 @@ inline QPainterPath path(const QVector<QPointF> &pts)
     return p;
 }
 
-} // namespace CatmullRomSplineSpline
+} // namespace CatmullRomSpline
 
 #endif // UI_CATMULLROMSPLINE_H

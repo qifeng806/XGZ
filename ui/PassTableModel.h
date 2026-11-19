@@ -8,8 +8,7 @@
 // =============================================================================
 #include <QAbstractTableModel>
 #include <QVector>
-#include <QMutex>
-#include <QMutexLocker>
+#include <QThread>
 #include "core/DataTypes.h"
 
 class PassTableModel : public QAbstractTableModel {
@@ -18,7 +17,7 @@ public:
     enum Column {
         ColIndex = 0, ColName, ColAos, ColLos, ColDur, ColMaxEl,
         ColAz, ColVis, ColSunAlt, ColIllum, ColArc, ColAosGeo,
-        ColRange, ColDoppler, ColMag, ColQuality,
+        ColRange, ColQuality,
         ColCount
     };
 
@@ -40,7 +39,6 @@ public:
 private:
     QVector<const PassEvent *> m_passes;
     int m_tzOffsetSec = 0;   // 0 = UTC
-    mutable QMutex m_dataMutex;  // 保护数据的互斥锁
 
     QString tzLabel() const;
     QString jdMsToStr(int64_t jdMs) const;

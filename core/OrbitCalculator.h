@@ -2,11 +2,12 @@
 #define CORE_ORBITCALCULATOR_H
 // =============================================================================
 // OrbitCalculator.h — 过境预报引擎
-// 完整流程: 粗搜(15s步) → 二分精化(18次) → TCA扫描 → 光照/多普勒 → 事件组装
+// 完整流程: 粗搜(15s步) → 二分精化(18次) → TCA扫描 → 光照/可见弧段 → 事件组装
 // =============================================================================
 #include "DataTypes.h"
 #include "Observer.h"
 #include "AtomicCancelFlag.h"
+#include "CoordTransform.h"
 #include <atomic>
 #include <functional>
 #include <optional>
@@ -23,16 +24,12 @@ public:
         double maxElevScanStepSec = 3.0;
         double minDurationSec     = 10.0;
         double mergeGapSec        = 60.0;
+        GravityModel gravityModel = GravityModel::WGS84;  // 重力模型
         bool   enableSunAnalysis   = true;
         bool   enableShadowCheck   = true;
         double darkSkyThresholdDeg = -6.0;
-        bool   enableDoppler       = false;
-        double carrierFreqMHz      = 437.800;
-        bool   enableRefraction    = true;
         bool   enableSamples       = true;   // 采集过境弧段采样点
         double sampleStepSec       = 15.0;   // 弧段采样步长（秒）
-        bool   enableMagnitude     = true;   // 星等估算（Vallerie 1963 相位模型）
-        double stdMagFallback      = 4.5;    // 无目录匹配时的固有星等（1000 km）
         bool   enableVisArc        = true;   // 可见弧段子区间分析（Heavens-Above 语义）
         Config() = default;
     };
@@ -82,8 +79,7 @@ private:
     void computeMoment(PropagateFn &propagate, const Observer &obs,
                        double jd, LookAngle &look, GeoPos &geo) const;
 
-    // 在 [AOS, LOS] 内等步长采集弧段采样点（填 PassEvent::samples，
-    // enableDoppler 时同时填充各采样点多普勒）
+    // 在 [AOS, LOS] 内等步长采集弧段采样点（填 PassEvent::samples）
     void collectSamples(PropagateFn &propagate, const Observer &obs,
                         double jdAOS, double jdLOS, PassEvent &ev,
                         const AtomicCancelFlagPtr cancel) const;
